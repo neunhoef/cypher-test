@@ -22,10 +22,6 @@ cypher-test/
 ├── src/
 │   ├── main.rs          # Main application entry point
 │   └── cypher.rs        # AST printing and parsing utilities
-├── queries/             # Sample Cypher query files
-│   ├── query_1.cyp      # AWS S3 bucket queries
-│   ├── query_2.cyp      # EC2-EBS relationship queries
-│   └── ...              # Additional test queries
 ├── docs/
 │   └── ast.md           # Detailed AST usage documentation
 ├── run_tests.sh         # Test suite runner script
