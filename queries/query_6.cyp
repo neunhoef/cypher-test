@@ -1,1 +1,0 @@
-MATCH path = (n_0:aws_iam_role {org_id:2, to_delete:false, entity_info_status:1, external_id: 'arn:aws:iam::417141415827:rol e/ecaaas-assume-role'}) -[r_0:CAN_ASSUME*1..3]-> (intermediate_role:aws_iam_rol e {org_id:2, to_delete:false, entity_info_status:1}) -[:CAN_ACCESS]-> (target_resource:aws_ec2_insta nce {org_id:2, to_delete:false, entity_info_status:1}) RETURN path

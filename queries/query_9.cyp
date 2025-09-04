@@ -1,1 +1,0 @@
-MATCH path = (n_0:NODE {org_id: 2, to_delete: false, entity_info_status: 1}) -[r_0 *1..2] ->(n_1:aws_iam_role {org_id: 2, to_delete: false, entity_info_status: 1}) -[r:CAN_ACCESS] ->(n_2:aws_s3_bucket {org_id: 2, to_delete: false, entity_info_status: 1}) RETURN path

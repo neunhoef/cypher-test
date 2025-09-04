@@ -1,1 +1,0 @@
-MATCH path = (n_0:aws_s3_bucket {org_id: 2, to_delete: false, entity_info_status: 1, external_id: 'arn:aws:s3:::cloudcraft-cloud trail'}) <-[:CAN_ACCESS]- (intermediate_role:aws_iam_rol e {org_id: 2, to_delete: false, entity_info_status: 1}) <-[r_0:CAN_ASSUME*1..3]-> (returned_role:aws_iam_role {org_id: 2, to_delete: false, entity_info_status: 1}) RETURN path

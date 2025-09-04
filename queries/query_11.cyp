@@ -1,1 +1,0 @@
-MATCH path = (n_0:aws_lambda_function {org_id:2, to_delete:false, entity_info_status:1}) -[r_0:ASSOCIATES]-> (n_0_0_0:aws_iam_role {org_id: 2, to_delete: false, entity_info_status: 1}) -[r_0_0_0:CAN_ACCESS {org_id: 2, to_delete: false}]-> (n_0_0_0_0:aws_s3_bucket {sensitive_data:true, org_id: 2, to_delete: false, entity_info_status: 1}) WHERE n_0.tags.account = "prod" RETURN path
