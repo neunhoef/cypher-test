@@ -1,0 +1,1 @@
+MATCH path = (n_0:aws_iam_user {org_id: 2, to_delete: false, entity_info_status: 1, is_administrator:false}) -[r_0:CAN_ASSUME*1..3]-> (intermediate_iam_principal:aw s_iam_role {org_id: 2, to_delete: false, entity_info_status: 1, is_administrator:true}) RETURN path
