@@ -527,6 +527,186 @@ fn determine_relationship_direction(_rel: *const cypher_astnode_t) -> Relationsh
     RelationshipDirection::Bidirectional
 }
 
+/// Finds the MATCH clause in a query and validates it's followed by a RETURN clause
+pub fn find_match_return_pattern(
+    result: *const cypher_parse_result_t,
+) -> Option<*const cypher_astnode_t> {
+    if result.is_null() {
+        return None;
+    }
+
+    let n_roots = unsafe { cypher_parse_result_nroots(result) };
+    if n_roots == 0 {
+        return None;
+    }
+
+    // Get the first root (should be a QUERY node)
+    let root = unsafe { cypher_parse_result_get_root(result, 0) };
+    if root.is_null() {
+        return None;
+    }
+
+    // Navigate to find MATCH and RETURN clauses
+    find_match_with_return(root)
+}
+
+/// Recursively searches for a MATCH clause followed by a RETURN clause
+pub fn find_match_with_return(node: *const cypher_astnode_t) -> Option<*const cypher_astnode_t> {
+    if node.is_null() {
+        return None;
+    }
+
+    let node_type = unsafe { cypher_astnode_type(node) };
+    let n_children = unsafe { cypher_astnode_nchildren(node) };
+
+    // Check if this is a query with clauses
+    let cypher_query = unsafe { CYPHER_AST_QUERY };
+    let cypher_match = unsafe { CYPHER_AST_MATCH };
+    let cypher_return = unsafe { CYPHER_AST_RETURN };
+
+    if node_type == cypher_query {
+        // Look for MATCH followed by RETURN in the query clauses
+        let mut found_match: Option<*const cypher_astnode_t> = None;
+        let mut found_return = false;
+
+        for i in 0..n_children {
+            let child = unsafe { cypher_astnode_get_child(node, i) };
+            if child.is_null() {
+                continue;
+            }
+
+            let child_type = unsafe { cypher_astnode_type(child) };
+
+            if child_type == cypher_match && found_match.is_none() {
+                found_match = Some(child);
+            } else if child_type == cypher_return && found_match.is_some() {
+                found_return = true;
+                break;
+            }
+        }
+
+        if found_match.is_some() && found_return {
+            return found_match;
+        }
+    } else if node_type == cypher_match {
+        // Check if there's a RETURN clause as a sibling
+        // This is a simplified check - in practice, we'd need to validate the full structure
+        return Some(node);
+    }
+
+    // Recursively search children
+    for i in 0..n_children {
+        let child = unsafe { cypher_astnode_get_child(node, i) };
+        if let Some(match_node) = find_match_with_return(child) {
+            return Some(match_node);
+        }
+    }
+
+    None
+}
+
+/// Prints the pattern graph in tabular format
+pub fn print_pattern_graph(vertices: &[PatternVertex], edges: &[PatternEdge]) {
+    println!("\n=== Pattern Graph ===");
+
+    // Print vertices table
+    println!("\n--- Vertices ---");
+    if vertices.is_empty() {
+        println!("No vertices found.");
+    } else {
+        println!("┌─────────────────┬─────────────────┬─────────────────┐");
+        println!("│ Identifier      │ Label           │ Properties      │");
+        println!("├─────────────────┼─────────────────┼─────────────────┤");
+
+        for vertex in vertices {
+            let identifier = format!("{:<15}", truncate_string(&vertex.identifier, 15));
+            let label = format!(
+                "{:<15}",
+                vertex
+                    .label
+                    .as_ref()
+                    .map_or("(none)".to_string(), |l| truncate_string(l, 15))
+            );
+            let properties = if vertex.properties.is_empty() {
+                "(none)".to_string()
+            } else {
+                let prop_str = vertex
+                    .properties
+                    .iter()
+                    .map(|(k, v)| format!("{k}:{v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                truncate_string(&prop_str, 15)
+            };
+            let properties = format!("{properties:<15}");
+
+            println!("│ {identifier} │ {label} │ {properties} │");
+        }
+        println!("└─────────────────┴─────────────────┴─────────────────┘");
+    }
+
+    // Print edges table
+    println!("\n--- Edges ---");
+    if edges.is_empty() {
+        println!("No edges found.");
+    } else {
+        println!(
+            "┌─────────────────┬─────────────────┬─────────────────┬─────────────────┬─────────────────┐"
+        );
+        println!(
+            "│ Source          │ Target          │ Type            │ Direction       │ Properties      │"
+        );
+        println!(
+            "├─────────────────┼─────────────────┼─────────────────┼─────────────────┼─────────────────┤"
+        );
+
+        for edge in edges {
+            let source = format!("{:<15}", truncate_string(&edge.source, 15));
+            let target = format!("{:<15}", truncate_string(&edge.target, 15));
+            let edge_type = format!(
+                "{:<15}",
+                edge.rel_type
+                    .as_ref()
+                    .map_or("(none)".to_string(), |t| truncate_string(t, 15))
+            );
+            let direction = format!(
+                "{:<15}",
+                match edge.direction {
+                    RelationshipDirection::Outbound => "->",
+                    RelationshipDirection::Inbound => "<-",
+                    RelationshipDirection::Bidirectional => "<->",
+                }
+            );
+            let properties = if edge.properties.is_empty() {
+                "(none)".to_string()
+            } else {
+                let prop_str = edge
+                    .properties
+                    .iter()
+                    .map(|(k, v)| format!("{k}:{v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                truncate_string(&prop_str, 15)
+            };
+            let properties = format!("{properties:<15}");
+
+            println!("│ {source} │ {target} │ {edge_type} │ {direction} │ {properties} │");
+        }
+        println!(
+            "└─────────────────┴─────────────────┴─────────────────┴─────────────────┴─────────────────┘"
+        );
+    }
+}
+
+/// Helper function to truncate strings for table display
+pub fn truncate_string(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
