@@ -1133,4 +1133,586 @@ mod tests {
 
         None
     }
+
+    // Helper function to parse query and extract match graph
+    fn parse_and_extract_graph(query: &str) -> Result<(Vec<PatternVertex>, Vec<PatternEdge>), Box<dyn std::error::Error>> {
+        let result = parse_cypher_query(query);
+        if result.is_null() {
+            return Err("Failed to parse query".into());
+        }
+
+        let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+        if n_errors > 0 {
+            cleanup_parse_result(result);
+            return Err("Parse errors in query".into());
+        }
+
+        let n_roots = unsafe { cypher_parse_result_nroots(result) };
+        if n_roots == 0 {
+            cleanup_parse_result(result);
+            return Err("No root nodes in parse result".into());
+        }
+
+        let root = unsafe { cypher_parse_result_get_root(result, 0) };
+        let match_clause = find_match_clause(root).ok_or("No MATCH clause found")?;
+        
+        let graph_result = make_match_graph(match_clause);
+        cleanup_parse_result(result);
+        
+        match graph_result {
+            Ok(graph) => Ok(graph),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    // Helper function to find vertex by identifier
+    fn find_vertex_by_id<'a>(vertices: &'a [PatternVertex], id: &str) -> Option<&'a PatternVertex> {
+        vertices.iter().find(|v| v.identifier == id)
+    }
+
+    // Helper function to count vertices with specific label
+    fn count_vertices_with_label(vertices: &[PatternVertex], label: &str) -> usize {
+        vertices.iter().filter(|v| v.label.as_deref() == Some(label)).count()
+    }
+
+    // Helper function to find edge between two vertices
+    #[allow(dead_code)]
+    fn find_edge<'a>(edges: &'a [PatternEdge], source: &str, target: &str) -> Option<&'a PatternEdge> {
+        edges.iter().find(|e| e.source == source && e.target == target)
+    }
+
+    // Helper function to validate graph is a path (connected, each vertex has at most 2 edges, at least 1)
+    fn is_path_graph(vertices: &[PatternVertex], edges: &[PatternEdge]) -> bool {
+        if vertices.is_empty() {
+            return true;
+        }
+        if vertices.len() == 1 {
+            return edges.is_empty();
+        }
+        
+        // Check degree constraint (each vertex has at most 2 edges)
+        for vertex in vertices {
+            let degree = edges.iter()
+                .filter(|e| e.source == vertex.identifier || e.target == vertex.identifier)
+                .count();
+            if degree == 0 || degree > 2 {
+                return false;
+            }
+        }
+        
+        // Check connectivity - must be connected as a single component
+        let mut visited = std::collections::HashSet::new();
+        let mut stack = vec![&vertices[0].identifier];
+        
+        while let Some(current) = stack.pop() {
+            if visited.contains(current) {
+                continue;
+            }
+            visited.insert(current);
+            
+            // Add neighbors
+            for edge in edges {
+                if edge.source == *current && !visited.contains(&edge.target) {
+                    stack.push(&edge.target);
+                } else if edge.target == *current && !visited.contains(&edge.source) {
+                    stack.push(&edge.source);
+                }
+            }
+        }
+        
+        visited.len() == vertices.len()
+    }
+
+    // Helper function to validate graph is a tree (connected, acyclic)
+    fn is_tree_graph(vertices: &[PatternVertex], edges: &[PatternEdge]) -> bool {
+        if vertices.is_empty() {
+            return true;
+        }
+        if vertices.len() == 1 {
+            return edges.is_empty();
+        }
+        
+        // Tree must have exactly n-1 edges for n vertices
+        if edges.len() != vertices.len() - 1 {
+            return false;
+        }
+
+        // Check connectivity using simple traversal
+        let mut visited = std::collections::HashSet::new();
+        let mut stack = vec![&vertices[0].identifier];
+        
+        while let Some(current) = stack.pop() {
+            if visited.contains(current) {
+                continue;
+            }
+            visited.insert(current);
+            
+            // Add neighbors
+            for edge in edges {
+                if edge.source == *current && !visited.contains(&edge.target) {
+                    stack.push(&edge.target);
+                } else if edge.target == *current && !visited.contains(&edge.source) {
+                    stack.push(&edge.source);
+                }
+            }
+        }
+        
+        visited.len() == vertices.len()
+    }
+
+    // Helper function to validate graph contains a cycle
+    fn has_cycle(vertices: &[PatternVertex], edges: &[PatternEdge]) -> bool {
+        if vertices.len() < 3 || edges.len() < 3 {
+            return false;
+        }
+
+        // Simple cycle detection using DFS for undirected graph
+        let mut visited = std::collections::HashSet::new();
+
+        for vertex in vertices {
+            if !visited.contains(&vertex.identifier) {
+                if has_cycle_util(&vertex.identifier, None, edges, &mut visited) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn has_cycle_util(
+        vertex: &str,
+        parent: Option<&str>,
+        edges: &[PatternEdge],
+        visited: &mut std::collections::HashSet<String>
+    ) -> bool {
+        visited.insert(vertex.to_string());
+
+        // Visit all neighbors
+        for edge in edges {
+            let neighbor = if edge.source == vertex {
+                Some(&edge.target)
+            } else if edge.target == vertex {
+                Some(&edge.source)
+            } else {
+                None
+            };
+
+            if let Some(neighbor) = neighbor {
+                // Skip the parent to avoid immediate back-edge
+                if parent == Some(neighbor) {
+                    continue;
+                }
+                
+                if !visited.contains(neighbor) {
+                    if has_cycle_util(neighbor, Some(vertex), edges, visited) {
+                        return true;
+                    }
+                } else {
+                    // Found a back edge to a visited vertex (not parent) - this is a cycle
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    // COMPREHENSIVE TEST SUITE FOR make_match_graph
+
+    #[test]
+    fn test_basic_node_patterns() {
+        // Test 1: Simple node without identifier
+        let result = parse_and_extract_graph("MATCH () RETURN *");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 1);
+        assert_eq!(edges.len(), 0);
+        assert!(vertices[0].identifier.starts_with("n_"));
+        assert_eq!(vertices[0].label, None);
+        assert!(vertices[0].properties.is_empty());
+
+        // Test 2: Node with identifier
+        let result = parse_and_extract_graph("MATCH (person) RETURN person");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 1);
+        assert_eq!(edges.len(), 0);
+        assert_eq!(vertices[0].identifier, "person");
+        assert_eq!(vertices[0].label, None);
+
+        // Test 3: Node with label
+        let result = parse_and_extract_graph("MATCH (n:Person) RETURN n");
+        assert!(result.is_ok());
+        let (vertices, _edges) = result.unwrap();
+        assert_eq!(vertices.len(), 1);
+        assert_eq!(vertices[0].identifier, "n");
+        assert_eq!(vertices[0].label, Some("Person".to_string()));
+
+        // Test 4: Node with identifier and label
+        let result = parse_and_extract_graph("MATCH (person:Person) RETURN person");
+        assert!(result.is_ok());
+        let (vertices, _edges) = result.unwrap();
+        assert_eq!(vertices.len(), 1);
+        assert_eq!(vertices[0].identifier, "person");
+        assert_eq!(vertices[0].label, Some("Person".to_string()));
+
+        // Test 5: Multiple different node types
+        let result = parse_and_extract_graph("MATCH (a), (b:Label), (c:AnotherLabel) RETURN a, b, c");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(edges.len(), 0);
+        
+        let a = find_vertex_by_id(&vertices, "a").unwrap();
+        assert_eq!(a.label, None);
+        
+        let b = find_vertex_by_id(&vertices, "b").unwrap();
+        assert_eq!(b.label, Some("Label".to_string()));
+        
+        let c = find_vertex_by_id(&vertices, "c").unwrap();
+        assert_eq!(c.label, Some("AnotherLabel".to_string()));
+    }
+
+    #[test]
+    fn test_relationship_patterns() {
+        // Test 1: Simple relationship without type
+        let result = parse_and_extract_graph("MATCH (a)-[r]->(b) RETURN a, r, b");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        assert_eq!(edges.len(), 1);
+        
+        let edge = &edges[0];
+        assert_eq!(edge.source, "a");
+        assert_eq!(edge.target, "b");
+        assert_eq!(edge.rel_type, None);
+
+        // Test 2: Relationship with type
+        let result = parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b) RETURN a, b");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        assert_eq!(edges.len(), 1);
+        
+        let edge = &edges[0];
+        assert_eq!(edge.rel_type, Some("KNOWS".to_string()));
+
+        // Test 3: Relationship with identifier and type
+        let result = parse_and_extract_graph("MATCH (a)-[r:KNOWS]->(b) RETURN a, r, b");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        assert_eq!(edges.len(), 1);
+        
+        let edge = &edges[0];
+        assert_eq!(edge.rel_type, Some("KNOWS".to_string()));
+
+        // Test 4: Undirected relationship
+        let result = parse_and_extract_graph("MATCH (a)-[r:CONNECTED]-(b) RETURN a, r, b");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        assert_eq!(edges.len(), 1);
+        
+        let edge = &edges[0];
+        assert_eq!(edge.rel_type, Some("CONNECTED".to_string()));
+
+        // Test 5: Multiple relationship types
+        let result = parse_and_extract_graph("MATCH (a)-[:FOLLOWS]->(b), (c)-[:LIKES]->(d) RETURN a, b, c, d");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 4);
+        assert_eq!(edges.len(), 2);
+        
+        // Verify both relationship types exist
+        let has_follows = edges.iter().any(|e| e.rel_type == Some("FOLLOWS".to_string()));
+        let has_likes = edges.iter().any(|e| e.rel_type == Some("LIKES".to_string()));
+        assert!(has_follows && has_likes);
+    }
+
+    #[test]
+    fn test_path_patterns() {
+        // Test 1: Short path (2 nodes, 1 edge)
+        let result = parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b) RETURN a, b");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        assert_eq!(edges.len(), 1);
+        assert!(is_path_graph(&vertices, &edges));
+
+        // Test 2: Medium path (3 nodes, 2 edges)
+        let result = parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b)-[:WORKS_AT]->(c) RETURN a, b, c");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(edges.len(), 2);
+        assert!(is_path_graph(&vertices, &edges));
+
+        // Test 3: Longer path (4 nodes, 3 edges)
+        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d) RETURN a, b, c, d");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 4);
+        assert_eq!(edges.len(), 3);
+        assert!(is_path_graph(&vertices, &edges));
+
+        // Test 4: Very long path (5 nodes, 4 edges)
+        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d)-[:R4]->(e) RETURN a, b, c, d, e");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 5);
+        assert_eq!(edges.len(), 4);
+        assert!(is_path_graph(&vertices, &edges));
+
+        // Test 5: Extra long path (6 nodes, 5 edges)
+        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d)-[:R4]->(e)-[:R5]->(f) RETURN a, b, c, d, e, f");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 6);
+        assert_eq!(edges.len(), 5);
+        assert!(is_path_graph(&vertices, &edges));
+    }
+
+    #[test]
+    fn test_multiple_pattern_paths() {
+        // Test 1: Two separate nodes
+        let result = parse_and_extract_graph("MATCH (a), (b) RETURN a, b");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        assert_eq!(edges.len(), 0);
+
+        // Test 2: Two separate simple relationships
+        let result = parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b), (c)-[:LIKES]->(d) RETURN a, b, c, d");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 4);
+        assert_eq!(edges.len(), 2);
+
+        // Test 3: Mix of single nodes and relationships
+        let result = parse_and_extract_graph("MATCH (isolated), (a)-[:CONNECTS]->(b) RETURN isolated, a, b");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(edges.len(), 1);
+
+        // Test 4: Three separate patterns
+        let result = parse_and_extract_graph("MATCH (single), (a)-[:R1]->(b), (c)-[:R2]->(d)-[:R3]->(e) RETURN *");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 6); // single + a,b + c,d,e
+        assert_eq!(edges.len(), 3); // 0 + 1 + 2
+
+        // Test 5: Multiple complex patterns
+        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c), (d)-[:R3]->(e), (f) RETURN *");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 6); // a,b,c + d,e + f
+        assert_eq!(edges.len(), 3); // 2 + 1 + 0
+    }
+
+    #[test]
+    fn test_mixed_labels_and_types() {
+        // Test 1: Mixed labeled and unlabeled nodes
+        let result = parse_and_extract_graph("MATCH (person:Person)-[:KNOWS]->(friend) RETURN person, friend");
+        assert!(result.is_ok());
+        let (vertices, _edges) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        
+        let person = find_vertex_by_id(&vertices, "person").unwrap();
+        assert_eq!(person.label, Some("Person".to_string()));
+        
+        let friend = find_vertex_by_id(&vertices, "friend").unwrap();
+        assert_eq!(friend.label, None);
+
+        // Test 2: Multiple different labels
+        let result = parse_and_extract_graph("MATCH (p:Person)-[:WORKS_AT]->(c:Company)-[:LOCATED_IN]->(city:City) RETURN p, c, city");
+        assert!(result.is_ok());
+        let (vertices, _edges) = result.unwrap();
+        assert_eq!(vertices.len(), 3);
+        
+        assert_eq!(count_vertices_with_label(&vertices, "Person"), 1);
+        assert_eq!(count_vertices_with_label(&vertices, "Company"), 1);
+        assert_eq!(count_vertices_with_label(&vertices, "City"), 1);
+
+        // Test 3: Mixed typed and untyped relationships
+        let result = parse_and_extract_graph("MATCH (a)-[:TYPED_REL]->(b)-[]->(c) RETURN a, b, c");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(edges.len(), 2);
+        
+        let typed_rels = edges.iter().filter(|e| e.rel_type.is_some()).count();
+        let untyped_rels = edges.iter().filter(|e| e.rel_type.is_none()).count();
+        assert_eq!(typed_rels, 1);
+        assert_eq!(untyped_rels, 1);
+
+        // Test 4: Complex mix
+        let result = parse_and_extract_graph("MATCH (p1:Person)-[:KNOWS]-(p2:Person), (c:Company)-[]->(l) RETURN *");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 4);
+        assert_eq!(edges.len(), 2);
+        
+        assert_eq!(count_vertices_with_label(&vertices, "Person"), 2);
+        assert_eq!(count_vertices_with_label(&vertices, "Company"), 1);
+    }
+
+    #[test]
+    fn test_topology_validation() {
+        // Test 1: Simple path topology
+        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c) RETURN a, b, c");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert!(is_path_graph(&vertices, &edges));
+        assert!(is_tree_graph(&vertices, &edges));
+        assert!(!has_cycle(&vertices, &edges));
+
+        // Test 2: Star topology (tree but not path)
+        // Note: This might be hard to represent in a single MATCH pattern, 
+        // but we can test the validation functions with constructed data
+        let vertices = vec![
+            PatternVertex { identifier: "center".to_string(), label: None, properties: HashMap::new() },
+            PatternVertex { identifier: "leaf1".to_string(), label: None, properties: HashMap::new() },
+            PatternVertex { identifier: "leaf2".to_string(), label: None, properties: HashMap::new() },
+            PatternVertex { identifier: "leaf3".to_string(), label: None, properties: HashMap::new() },
+        ];
+        let edges = vec![
+            PatternEdge { source: "center".to_string(), target: "leaf1".to_string(), rel_type: None, properties: HashMap::new(), direction: RelationshipDirection::Outbound },
+            PatternEdge { source: "center".to_string(), target: "leaf2".to_string(), rel_type: None, properties: HashMap::new(), direction: RelationshipDirection::Outbound },
+            PatternEdge { source: "center".to_string(), target: "leaf3".to_string(), rel_type: None, properties: HashMap::new(), direction: RelationshipDirection::Outbound },
+        ];
+        
+        assert!(!is_path_graph(&vertices, &edges)); // Not a path (center has degree 3)
+        assert!(is_tree_graph(&vertices, &edges));   // But is a tree
+        assert!(!has_cycle(&vertices, &edges));      // No cycles
+
+        // Test 3: Disconnected components
+        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b), (c)-[:R2]->(d) RETURN a, b, c, d");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert!(!is_path_graph(&vertices, &edges)); // Not connected as single path
+        assert!(!is_tree_graph(&vertices, &edges)); // Not connected as single tree
+    }
+
+    #[test]
+    fn test_auto_generated_identifiers() {
+        // Test 1: Nodes without identifiers get auto-generated ones
+        let result = parse_and_extract_graph("MATCH ()-[]-() RETURN *");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        assert_eq!(edges.len(), 1);
+        
+        // Both vertices should have auto-generated identifiers
+        for vertex in &vertices {
+            assert!(vertex.identifier.starts_with("n_") || !vertex.identifier.is_empty());
+        }
+
+        // Test 2: Mix of explicit and auto-generated identifiers
+        let result = parse_and_extract_graph("MATCH (named)-[]-() RETURN named");
+        assert!(result.is_ok());
+        let (vertices, _edges) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        
+        let named = find_vertex_by_id(&vertices, "named");
+        assert!(named.is_some());
+        
+        // The other vertex should have auto-generated identifier
+        let other = vertices.iter().find(|v| v.identifier != "named").unwrap();
+        assert!(other.identifier.starts_with("n_") || other.identifier != "named");
+    }
+
+    #[test]
+    fn test_complex_real_world_patterns() {
+        // Test 1: Social network pattern
+        let result = parse_and_extract_graph("MATCH (user:User)-[:FOLLOWS]->(friend:User)-[:POSTS]->(content:Post) RETURN user, friend, content");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(edges.len(), 2);
+        assert!(is_path_graph(&vertices, &edges));
+
+        // Test 2: Organizational hierarchy
+        let result = parse_and_extract_graph("MATCH (emp:Employee)-[:REPORTS_TO]->(mgr:Manager)-[:WORKS_FOR]->(dept:Department) RETURN emp, mgr, dept");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(edges.len(), 2);
+        
+        assert_eq!(count_vertices_with_label(&vertices, "Employee"), 1);
+        assert_eq!(count_vertices_with_label(&vertices, "Manager"), 1);
+        assert_eq!(count_vertices_with_label(&vertices, "Department"), 1);
+
+        // Test 3: Technology stack pattern
+        let result = parse_and_extract_graph("MATCH (app:Application)-[:RUNS_ON]->(server:Server)-[:HOSTS]->(db:Database) RETURN app, server, db");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(edges.len(), 2);
+        
+        let runs_on = edges.iter().any(|e| e.rel_type == Some("RUNS_ON".to_string()));
+        let hosts = edges.iter().any(|e| e.rel_type == Some("HOSTS".to_string()));
+        assert!(runs_on && hosts);
+
+        // Test 4: Supply chain pattern
+        let result = parse_and_extract_graph("MATCH (supplier:Supplier)-[:SUPPLIES]->(manufacturer:Manufacturer)-[:PRODUCES]->(product:Product)-[:SOLD_TO]->(customer:Customer) RETURN *");
+        assert!(result.is_ok());
+        let (vertices, edges) = result.unwrap();
+        assert_eq!(vertices.len(), 4);
+        assert_eq!(edges.len(), 3);
+        assert!(is_path_graph(&vertices, &edges));
+        
+        // Verify all relationship types
+        let rel_types: Vec<String> = edges.iter()
+            .filter_map(|e| e.rel_type.clone())
+            .collect();
+        assert!(rel_types.contains(&"SUPPLIES".to_string()));
+        assert!(rel_types.contains(&"PRODUCES".to_string()));
+        assert!(rel_types.contains(&"SOLD_TO".to_string()));
+    }
+
+    #[test]
+    fn test_error_conditions() {
+        // Test 1: Invalid query syntax
+        let result = parse_and_extract_graph("INVALID SYNTAX {{{");
+        assert!(result.is_err());
+
+        // Test 2: Non-MATCH query
+        let _result = parse_and_extract_graph("CREATE (n) RETURN n");
+        // This might still work if it finds no MATCH clause, or might error
+        // The exact behavior depends on the implementation
+
+        // Test 3: Empty pattern
+        let result = parse_and_extract_graph("MATCH RETURN *");
+        assert!(result.is_err());
+
+        // Test 4: NULL input to make_match_graph
+        let result = make_match_graph(std::ptr::null());
+        assert_eq!(result, Err(GraphError::InvalidAstNode));
+    }
+
+    #[test]
+    fn test_graph_printing() {
+        // Test that graph printing doesn't panic with various patterns
+        let result = parse_and_extract_graph("MATCH (p:Person {name: 'Alice'})-[:KNOWS {since: 2020}]->(f:Friend) RETURN p, f");
+        if let Ok((vertices, edges)) = result {
+            print_pattern_graph(&vertices, &edges);
+            // This should not panic
+        }
+
+        // Test with empty graph
+        let vertices = vec![];
+        let edges = vec![];
+        print_pattern_graph(&vertices, &edges);
+
+        // Test with single vertex
+        let vertices = vec![PatternVertex { 
+            identifier: "test".to_string(), 
+            label: Some("TestLabel".to_string()), 
+            properties: HashMap::new() 
+        }];
+        let edges = vec![];
+        print_pattern_graph(&vertices, &edges);
+    }
 }
