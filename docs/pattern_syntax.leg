@@ -1,0 +1,107 @@
+#
+# Match clause
+#
+
+match-clause =
+      < OPTIONAL-MATCH p:pattern
+        ( h:hint                       { sequence_add(h); }
+        )* ( WHERE c:expression | c:_null_ ) >
+                                       { $$ = match_clause(true, p, c); }
+    | < MATCH p:pattern
+        ( h:hint                       { sequence_add(h); }
+        )* ( WHERE c:expression | c:_null_ ) >
+                                       { $$ = match_clause(false, p, c); }
+
+
+#----------------------------------------------------
+# Pattern parsing
+#----------------------------------------------------
+
+pattern =
+    < p:pattern-part                   { sequence_add(p); }
+    ( COMMA - p:pattern-part           { sequence_add(p); }
+    )* >                               { $$ = pattern(); }
+    -
+
+pattern-part =
+      < i:identifier EQUAL - p:anon-pattern-part >
+                                       { $$ = named_path(i, p); }
+    | p:anon-pattern-part              { $$ = p; }
+
+anon-pattern-part =
+      p:shortest-path-pattern          { $$ = p; }
+    | p:pattern-path                   { $$ = p; }
+
+shortest-path-pattern =
+      < SHORTESTPATH LEFT-PAREN - p:pattern-path - RIGHT-PAREN >
+                                       { $$ = shortest_path(true, p); }
+    | < ALLSHORTESTPATHS LEFT-PAREN - p:pattern-path - RIGHT-PAREN >
+                                       { $$ = shortest_path(false, p); }
+
+pattern-path =
+    < n:node-pattern                   { sequence_add(n); }
+    ( - r:relationship-pattern - n:node-pattern
+                                       { sequence_add(r); sequence_add(n); }
+    )* >                               { $$ = pattern_path(); }
+
+pattern-expression =
+      p:shortest-path-pattern -        { $$ = p; }
+    | p:pattern-expression-path -      { $$ = p; }
+
+pattern-expression-path =
+    < n:node-pattern                   { sequence_add(n); }
+    ( - r:relationship-pattern - n:node-pattern
+                                       { sequence_add(r); sequence_add(n); }
+    )+ >                               { $$ = pattern_path(); }
+
+node-pattern = < LEFT-PAREN -
+    (i:identifier | i:_null_)
+    ( n:label                          { sequence_add(n); }
+    )* (p:pattern-properties | p:_null_)
+    RIGHT-PAREN >                      { $$ = node_pattern(i, p); }
+
+relationship-pattern =
+      < ( LEFT-ARROW-HEAD - DASH -
+          ( DASH
+            ( - RIGHT-ARROW-HEAD >     { $$ = simple_rel_pattern(BIDIRECTIONAL); }
+            | _empty_ >                { $$ = simple_rel_pattern(INBOUND); }
+            )
+          | LEFT-SQ-PAREN - (i:identifier | i:_null_)
+            rel-types? (l:rel-varlength | l:_null_)
+            (p:pattern-properties | p:_null_) RIGHT-SQ-PAREN - DASH 
+            ( - RIGHT-ARROW-HEAD >     { $$ = rel_pattern(BIDIRECTIONAL, i, l, p); }
+            | _empty_ >                { $$ = rel_pattern(INBOUND, i, l, p); }
+            )
+          )
+        | DASH -
+          ( DASH
+            ( - RIGHT-ARROW-HEAD >     { $$ = simple_rel_pattern(OUTBOUND); }
+            | _empty_ >                { $$ = simple_rel_pattern(BIDIRECTIONAL); }
+            )
+          | LEFT-SQ-PAREN - (i:identifier | i:_null_)
+            rel-types? (l:rel-varlength | l:_null_)
+            (p:pattern-properties | p:_null_) RIGHT-SQ-PAREN - DASH 
+            ( - RIGHT-ARROW-HEAD >     { $$ = rel_pattern(OUTBOUND, i, l, p); }
+            | _empty_ >                { $$ = rel_pattern(BIDIRECTIONAL, i, l, p); }
+            )
+          )
+        )
+
+rel-types =
+    n:rel-type                         { sequence_add(n); }
+    ( PIPE - (n:rel-type | n:rel-type-name)
+                                       { sequence_add(n); }
+    )*
+
+rel-varlength =
+    ( < STAR - (s:integer-literal | s:_null_) ELLIPSIS -
+      (e:integer-literal | e:_null_) >
+                                       { $$ = range(s, e); }
+    | STAR - < (s:integer-literal | s:_null_) >
+                                       { $$ = range(s, s); }
+    | < STAR - >                       { $$ = range(NULL, NULL); }
+    )
+
+pattern-properties = map-literal | parameter
+
+
