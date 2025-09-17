@@ -624,7 +624,7 @@ fn extract_expression_value(node: *const cypher_astnode_t) -> Option<String> {
                     let type_str = CStr::from_ptr(type_str_ptr.cast::<c_char>())
                         .to_string_lossy()
                         .to_string();
-                    return Some(format!("<{}>", type_str));
+                    return Some(format!("<{type_str}>"));
                 }
                 return Some("<unknown>".to_string());
             }
