@@ -10,11 +10,7 @@ use libcypher_parser_sys::*;
 
 // Include our cypher module
 mod cypher;
-use cypher::{GraphError, make_match_graph, find_match_return_pattern, print_pattern_graph};
-
-
-
-
+use cypher::{GraphError, find_match_return_pattern, make_match_graph, print_pattern_graph};
 
 fn main() {
     // Get command line arguments

@@ -1,8 +1,8 @@
-use std::ffi::CStr;
-use std::os::raw::c_char;
-use std::collections::HashMap;
 #[allow(clippy::wildcard_imports)]
 use libcypher_parser_sys::*;
+use std::collections::HashMap;
+use std::ffi::CStr;
+use std::os::raw::c_char;
 
 /// Prints the AST structure recursively with indentation
 #[allow(dead_code)]
@@ -25,8 +25,13 @@ pub fn print_ast(node: *const cypher_astnode_t, indent: usize) {
     };
 
     let n_children = unsafe { cypher_astnode_nchildren(node) };
-    
-    println!("{}{} ({} children)", "  ".repeat(indent), type_str, n_children);
+
+    println!(
+        "{}{} ({} children)",
+        "  ".repeat(indent),
+        type_str,
+        n_children
+    );
 
     // Print children recursively
     for i in 0..n_children {
@@ -55,7 +60,6 @@ pub fn print_ast_from_result(result: *const cypher_parse_result_t) {
     }
 }
 
-
 /// Enhanced AST printer with better formatting and type information
 #[allow(dead_code)]
 pub fn print_ast_enhanced(node: *const cypher_astnode_t, indent: usize) {
@@ -76,13 +80,15 @@ pub fn print_ast_enhanced(node: *const cypher_astnode_t, indent: usize) {
         }
     };
     let n_children = unsafe { cypher_astnode_nchildren(node) };
-    
+
     // Print node information
-    println!("{}{} (type: {}, children: {})", 
-             "  ".repeat(indent), 
-             type_str, 
-             node_type, 
-             n_children);
+    println!(
+        "{}{} (type: {}, children: {})",
+        "  ".repeat(indent),
+        type_str,
+        node_type,
+        n_children
+    );
 
     // Print children recursively
     for i in 0..n_children {
@@ -141,8 +147,8 @@ pub struct PatternEdge {
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum RelationshipDirection {
-    Outbound,   // ->
-    Inbound,    // <-
+    Outbound,      // ->
+    Inbound,       // <-
     Bidirectional, // Both directions
 }
 
@@ -160,7 +166,9 @@ impl std::fmt::Display for GraphError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GraphError::InvalidAstNode => write!(f, "Invalid AST node provided"),
-            GraphError::VariableLengthRelationship => write!(f, "Variable length relationships are not supported"),
+            GraphError::VariableLengthRelationship => {
+                write!(f, "Variable length relationships are not supported")
+            }
             GraphError::UnsupportedPattern => write!(f, "Unsupported pattern type encountered"),
             GraphError::InvalidIdentifier => write!(f, "Invalid identifier in pattern"),
         }
@@ -170,7 +178,9 @@ impl std::fmt::Display for GraphError {
 impl std::error::Error for GraphError {}
 
 /// Creates a graph representation from a MATCH statement AST
-pub fn make_match_graph(match_node: *const cypher_astnode_t) -> Result<(Vec<PatternVertex>, Vec<PatternEdge>), GraphError> {
+pub fn make_match_graph(
+    match_node: *const cypher_astnode_t,
+) -> Result<(Vec<PatternVertex>, Vec<PatternEdge>), GraphError> {
     if match_node.is_null() {
         return Err(GraphError::InvalidAstNode);
     }
@@ -204,8 +214,12 @@ pub fn make_match_graph(match_node: *const cypher_astnode_t) -> Result<(Vec<Patt
 }
 
 /// Processes a pattern node and extracts vertices and edges
-fn process_pattern(pattern: *const cypher_astnode_t, vertices: &mut Vec<PatternVertex>, 
-                  edges: &mut Vec<PatternEdge>, node_counter: &mut u32) -> Result<(), GraphError> {
+fn process_pattern(
+    pattern: *const cypher_astnode_t,
+    vertices: &mut Vec<PatternVertex>,
+    edges: &mut Vec<PatternEdge>,
+    node_counter: &mut u32,
+) -> Result<(), GraphError> {
     if pattern.is_null() {
         return Err(GraphError::InvalidAstNode);
     }
@@ -214,7 +228,7 @@ fn process_pattern(pattern: *const cypher_astnode_t, vertices: &mut Vec<PatternV
     let cypher_pattern = unsafe { CYPHER_AST_PATTERN };
     let cypher_named_path = unsafe { CYPHER_AST_NAMED_PATH };
     let cypher_pattern_path = unsafe { CYPHER_AST_PATTERN_PATH };
-    
+
     if pattern_type == cypher_pattern {
         // Pattern contains multiple pattern paths
         let n_children = unsafe { cypher_astnode_nchildren(pattern) };
@@ -240,8 +254,12 @@ fn process_pattern(pattern: *const cypher_astnode_t, vertices: &mut Vec<PatternV
 }
 
 /// Processes a pattern path and extracts alternating nodes and relationships
-fn process_pattern_path(path: *const cypher_astnode_t, vertices: &mut Vec<PatternVertex>, 
-                       edges: &mut Vec<PatternEdge>, node_counter: &mut u32) -> Result<(), GraphError> {
+fn process_pattern_path(
+    path: *const cypher_astnode_t,
+    vertices: &mut Vec<PatternVertex>,
+    edges: &mut Vec<PatternEdge>,
+    node_counter: &mut u32,
+) -> Result<(), GraphError> {
     if path.is_null() {
         return Err(GraphError::InvalidAstNode);
     }
@@ -251,7 +269,7 @@ fn process_pattern_path(path: *const cypher_astnode_t, vertices: &mut Vec<Patter
 
     let cypher_node_pattern = unsafe { CYPHER_AST_NODE_PATTERN };
     let cypher_rel_pattern = unsafe { CYPHER_AST_REL_PATTERN };
-    
+
     let mut i = 0;
     while i < n_children {
         let child = unsafe { cypher_astnode_get_child(path, i) };
@@ -269,18 +287,19 @@ fn process_pattern_path(path: *const cypher_astnode_t, vertices: &mut Vec<Patter
                 if i + 1 < n_children {
                     let next_child = unsafe { cypher_astnode_get_child(path, i + 1) };
                     let next_child_type = unsafe { cypher_astnode_type(next_child) };
-                    
+
                     if next_child_type == cypher_node_pattern {
                         let target_vertex = process_node_pattern(next_child, node_counter)?;
                         let target_id = target_vertex.identifier.clone();
-                        
+
                         // Process the relationship
-                        let edge = process_relationship_pattern(child, source_id.clone(), target_id)?;
+                        let edge =
+                            process_relationship_pattern(child, source_id.clone(), target_id)?;
                         edges.push(edge);
-                        
+
                         current_node_id = Some(target_vertex.identifier.clone());
                         vertices.push(target_vertex);
-                        
+
                         // Skip the next node since we processed it here
                         i += 2; // Skip both the relationship and the target node
                     } else {
@@ -302,7 +321,10 @@ fn process_pattern_path(path: *const cypher_astnode_t, vertices: &mut Vec<Patter
 }
 
 /// Processes a node pattern and creates a `PatternVertex`
-fn process_node_pattern(node: *const cypher_astnode_t, node_counter: &mut u32) -> Result<PatternVertex, GraphError> {
+fn process_node_pattern(
+    node: *const cypher_astnode_t,
+    node_counter: &mut u32,
+) -> Result<PatternVertex, GraphError> {
     if node.is_null() {
         return Err(GraphError::InvalidAstNode);
     }
@@ -315,15 +337,15 @@ fn process_node_pattern(node: *const cypher_astnode_t, node_counter: &mut u32) -
     let cypher_identifier = unsafe { CYPHER_AST_IDENTIFIER };
     let cypher_label = unsafe { CYPHER_AST_LABEL };
     let cypher_map = unsafe { CYPHER_AST_MAP };
-    
+
     for i in 0..n_children {
         let child = unsafe { cypher_astnode_get_child(node, i) };
         if child.is_null() {
             continue;
         }
-        
+
         let child_type = unsafe { cypher_astnode_type(child) };
-        
+
         if child_type == cypher_identifier {
             if let Some(id) = extract_identifier(child) {
                 identifier = id;
@@ -351,7 +373,11 @@ fn process_node_pattern(node: *const cypher_astnode_t, node_counter: &mut u32) -
 }
 
 /// Processes a relationship pattern and creates a `PatternEdge`
-fn process_relationship_pattern(rel: *const cypher_astnode_t, source: String, target: String) -> Result<PatternEdge, GraphError> {
+fn process_relationship_pattern(
+    rel: *const cypher_astnode_t,
+    source: String,
+    target: String,
+) -> Result<PatternEdge, GraphError> {
     if rel.is_null() {
         return Err(GraphError::InvalidAstNode);
     }
@@ -367,15 +393,15 @@ fn process_relationship_pattern(rel: *const cypher_astnode_t, source: String, ta
     let n_children = unsafe { cypher_astnode_nchildren(rel) };
     let cypher_reltype = unsafe { CYPHER_AST_RELTYPE };
     let cypher_map = unsafe { CYPHER_AST_MAP };
-    
+
     for i in 0..n_children {
         let child = unsafe { cypher_astnode_get_child(rel, i) };
         if child.is_null() {
             continue;
         }
-        
+
         let child_type = unsafe { cypher_astnode_type(child) };
-        
+
         if child_type == cypher_reltype {
             if let Some(rt) = extract_reltype(child) {
                 rel_type = Some(rt);
@@ -402,15 +428,15 @@ fn extract_identifier(node: *const cypher_astnode_t) -> Option<String> {
     if node.is_null() {
         return None;
     }
-    
+
     // Verify this is actually an identifier node
     let node_type = unsafe { cypher_astnode_type(node) };
     let cypher_identifier = unsafe { CYPHER_AST_IDENTIFIER };
-    
+
     if node_type != cypher_identifier {
         return None;
     }
-    
+
     // Get the identifier name using libcypher-parser function
     unsafe {
         let name_ptr = cypher_ast_identifier_get_name(node);
@@ -419,7 +445,7 @@ fn extract_identifier(node: *const cypher_astnode_t) -> Option<String> {
             return Some(c_str.to_string_lossy().to_string());
         }
     }
-    
+
     // If we can't extract the name, return None so auto-generation kicks in
     None
 }
@@ -430,12 +456,17 @@ unsafe extern "C" {
     fn cypher_ast_label_get_name(node: *const cypher_astnode_t) -> *const c_char;
     fn cypher_ast_reltype_get_name(node: *const cypher_astnode_t) -> *const c_char;
     fn cypher_ast_map_nentries(node: *const cypher_astnode_t) -> u32;
-    fn cypher_ast_map_get_key(node: *const cypher_astnode_t, index: u32) -> *const cypher_astnode_t;
-    fn cypher_ast_map_get_value(node: *const cypher_astnode_t, index: u32) -> *const cypher_astnode_t;
+    fn cypher_ast_map_get_key(node: *const cypher_astnode_t, index: u32)
+    -> *const cypher_astnode_t;
+    fn cypher_ast_map_get_value(
+        node: *const cypher_astnode_t,
+        index: u32,
+    ) -> *const cypher_astnode_t;
     fn cypher_ast_prop_name_get_value(node: *const cypher_astnode_t) -> *const c_char;
     fn cypher_ast_string_get_value(node: *const cypher_astnode_t) -> *const c_char;
     fn cypher_ast_integer_get_valuestr(node: *const cypher_astnode_t) -> *const c_char;
     fn cypher_ast_float_get_valuestr(node: *const cypher_astnode_t) -> *const c_char;
+    fn cypher_ast_rel_pattern_get_direction(node: *const cypher_astnode_t) -> u32;
 }
 
 /// Extracts label text from a label AST node  
@@ -443,15 +474,15 @@ fn extract_label(node: *const cypher_astnode_t) -> Option<String> {
     if node.is_null() {
         return None;
     }
-    
+
     // Verify this is actually a label node
     let node_type = unsafe { cypher_astnode_type(node) };
     let cypher_label = unsafe { CYPHER_AST_LABEL };
-    
+
     if node_type != cypher_label {
         return None;
     }
-    
+
     // Get the label name using libcypher-parser function
     unsafe {
         let name_ptr = cypher_ast_label_get_name(node);
@@ -460,7 +491,7 @@ fn extract_label(node: *const cypher_astnode_t) -> Option<String> {
             return Some(c_str.to_string_lossy().to_string());
         }
     }
-    
+
     None
 }
 
@@ -469,15 +500,15 @@ fn extract_reltype(node: *const cypher_astnode_t) -> Option<String> {
     if node.is_null() {
         return None;
     }
-    
+
     // Verify this is actually a reltype node
     let node_type = unsafe { cypher_astnode_type(node) };
     let cypher_reltype = unsafe { CYPHER_AST_RELTYPE };
-    
+
     if node_type != cypher_reltype {
         return None;
     }
-    
+
     // Get the reltype name using libcypher-parser function
     unsafe {
         let name_ptr = cypher_ast_reltype_get_name(node);
@@ -486,7 +517,7 @@ fn extract_reltype(node: *const cypher_astnode_t) -> Option<String> {
             return Some(c_str.to_string_lossy().to_string());
         }
     }
-    
+
     None
 }
 
@@ -495,29 +526,29 @@ fn extract_properties(node: *const cypher_astnode_t) -> Option<HashMap<String, S
     if node.is_null() {
         return None;
     }
-    
+
     // Verify this is actually a map node
     let node_type = unsafe { cypher_astnode_type(node) };
     let cypher_map = unsafe { CYPHER_AST_MAP };
-    
+
     if node_type != cypher_map {
         return None;
     }
-    
+
     let mut properties = HashMap::new();
-    
+
     // Get the number of entries in the map
     let n_entries = unsafe { cypher_ast_map_nentries(node) };
-    
+
     for i in 0..n_entries {
         // Get the key and value for this entry
         let key_node = unsafe { cypher_ast_map_get_key(node, i) };
         let value_node = unsafe { cypher_ast_map_get_value(node, i) };
-        
+
         if key_node.is_null() || value_node.is_null() {
             continue;
         }
-        
+
         // Extract the key string from the property name node
         if let Some(key_str) = extract_property_name(key_node) {
             // Extract the value string from the expression node
@@ -526,7 +557,7 @@ fn extract_properties(node: *const cypher_astnode_t) -> Option<HashMap<String, S
             }
         }
     }
-    
+
     Some(properties)
 }
 
@@ -535,14 +566,14 @@ fn extract_property_name(node: *const cypher_astnode_t) -> Option<String> {
     if node.is_null() {
         return None;
     }
-    
+
     let node_type = unsafe { cypher_astnode_type(node) };
     let cypher_prop_name = unsafe { CYPHER_AST_PROP_NAME };
-    
+
     if node_type != cypher_prop_name {
         return None;
     }
-    
+
     unsafe {
         let name_ptr = cypher_ast_prop_name_get_value(node);
         if !name_ptr.is_null() {
@@ -550,7 +581,7 @@ fn extract_property_name(node: *const cypher_astnode_t) -> Option<String> {
             return Some(c_str.to_string_lossy().to_string());
         }
     }
-    
+
     None
 }
 
@@ -559,9 +590,9 @@ fn extract_expression_value(node: *const cypher_astnode_t) -> Option<String> {
     if node.is_null() {
         return None;
     }
-    
+
     let node_type = unsafe { cypher_astnode_type(node) };
-    
+
     unsafe {
         let cypher_string = CYPHER_AST_STRING;
         let cypher_integer = CYPHER_AST_INTEGER;
@@ -570,7 +601,7 @@ fn extract_expression_value(node: *const cypher_astnode_t) -> Option<String> {
         let cypher_true = CYPHER_AST_TRUE;
         let cypher_false = CYPHER_AST_FALSE;
         let cypher_null = CYPHER_AST_NULL;
-        
+
         match node_type {
             x if x == cypher_string => {
                 let str_ptr = cypher_ast_string_get_value(node);
@@ -630,7 +661,7 @@ fn extract_expression_value(node: *const cypher_astnode_t) -> Option<String> {
             }
         }
     }
-    
+
     None
 }
 
@@ -639,32 +670,54 @@ fn has_variable_length(rel: *const cypher_astnode_t) -> bool {
     if rel.is_null() {
         return false;
     }
-    
+
     let n_children = unsafe { cypher_astnode_nchildren(rel) };
     let cypher_range = unsafe { CYPHER_AST_RANGE };
-    
+
     for i in 0..n_children {
         let child = unsafe { cypher_astnode_get_child(rel, i) };
         if child.is_null() {
             continue;
         }
-        
+
         let child_type = unsafe { cypher_astnode_type(child) };
-        
+
         // Look for range nodes that indicate variable length
         if child_type == cypher_range {
             return true;
         }
     }
-    
+
     false
 }
 
 /// Determines the direction of a relationship from its AST representation
-fn determine_relationship_direction(_rel: *const cypher_astnode_t) -> RelationshipDirection {
-    // This would need to be implemented by examining the relationship pattern structure
-    // For now, default to bidirectional
-    RelationshipDirection::Bidirectional
+fn determine_relationship_direction(rel: *const cypher_astnode_t) -> RelationshipDirection {
+    if rel.is_null() {
+        return RelationshipDirection::Bidirectional;
+    }
+
+    // Verify this is actually a relationship pattern node
+    let node_type = unsafe { cypher_astnode_type(rel) };
+    let cypher_rel_pattern = unsafe { CYPHER_AST_REL_PATTERN };
+
+    if node_type != cypher_rel_pattern {
+        return RelationshipDirection::Bidirectional;
+    }
+
+    // Get the direction from the relationship pattern
+    let direction = unsafe { cypher_ast_rel_pattern_get_direction(rel) };
+
+    // Based on actual libcypher-parser constants (confirmed by testing):
+    // 0 = CYPHER_REL_INBOUND (directed left: <-[r]-)
+    // 1 = CYPHER_REL_OUTBOUND (directed right: -[r]->)
+    // 2 = CYPHER_REL_BIDIRECTIONAL (undirected: -[r]-)
+    match direction {
+        0 => RelationshipDirection::Inbound,       // <-[r]-
+        1 => RelationshipDirection::Outbound,      // -[r]->
+        2 => RelationshipDirection::Bidirectional, // -[r]-
+        _ => RelationshipDirection::Bidirectional, // fallback for unknown values
+    }
 }
 
 /// Finds the MATCH clause in a query and validates it's followed by a RETURN clause
@@ -858,7 +911,7 @@ mod tests {
         let c_query = CString::new(query).expect("Failed to create CString");
         let config = unsafe { cypher_parser_new_config() };
         assert!(!config.is_null(), "Failed to create parser config");
-        
+
         let result = unsafe {
             cypher_uparse(
                 c_query.as_ptr().cast::<c_char>(),
@@ -868,11 +921,11 @@ mod tests {
                 u64::from(CYPHER_PARSE_DEFAULT),
             )
         };
-        
+
         unsafe {
             cypher_parser_config_free(config);
         }
-        
+
         result
     }
 
@@ -917,18 +970,18 @@ mod tests {
     fn test_simple_match_query() {
         let query = "MATCH (n) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
                 // Test basic AST printing
                 print_ast_from_result(result);
-                
+
                 // Test enhanced AST printing
                 print_ast_from_result_enhanced(result);
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -936,18 +989,18 @@ mod tests {
     fn test_complex_match_with_properties() {
         let query = "MATCH path = (n_0:aws_s3_bucket {org_id: 2, to_delete: false, default_encryption_type: 'aws:kms'}) RETURN path";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
                 let n_roots = unsafe { cypher_parse_result_nroots(result) };
                 assert!(n_roots > 0, "Should have at least one root node");
-                
+
                 // Test enhanced AST printing
                 print_ast_from_result_enhanced(result);
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -955,19 +1008,19 @@ mod tests {
     fn test_relationship_query() {
         let query = "MATCH path = (n_0:aws_ec2_instance {org_id: 2, to_delete: false}) <-[r_0:ATTACHES_TO]- (n_1:aws_ebs_volume {org_id: 2, to_delete: false, encrypted:false}) RETURN path";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
                 let n_roots = unsafe { cypher_parse_result_nroots(result) };
                 assert!(n_roots > 0, "Should have at least one root node");
-                
+
                 // Test both AST printing methods
                 print_ast_from_result(result);
                 print_ast_from_result_enhanced(result);
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -975,18 +1028,18 @@ mod tests {
     fn test_complex_path_query() {
         let query = "MATCH path = (n_0:aws_ec2_instance {org_id: 2, to_delete: false, entity_info_status:1, is_publicly_accessible: true}) -[r_0:ASSOCIATES]-> (n_0_0:aws_iam_instance_profile {org_id: 2, to_delete: false, entity_info_status:1}) -[r_0_0:ASSUMES]-> (n_0_0_0:aws_iam_role {org_id: 2, to_delete: false, entity_info_status:1}) -[r_0_0_0:CAN_ACCESS]-> (n_0_0_0_0:aws_s3_bucket {org_id: 2, to_delete: false, entity_info_status:1, sensitive_data: true}) RETURN path";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
                 let n_roots = unsafe { cypher_parse_result_nroots(result) };
                 assert!(n_roots > 0, "Should have at least one root node");
-                
+
                 // Test enhanced AST printing
                 print_ast_from_result_enhanced(result);
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -994,18 +1047,18 @@ mod tests {
     fn test_administrator_role_query() {
         let query = "MATCH path = (n_0:aws_ec2_instance {org_id:2, entity_info_status: 1, to_delete:false, is_publicly_accessible: true}) -[r_0:ASSOCIATES]-> (n_0_0:aws_iam_instance_profile {org_id:2, entity_info_status: 1, to_delete:false}) -[r_0_0:ASSUMES]-> (n_0_0_0:aws_iam_role {org_id:2, entity_info_status: 1, to_delete:false, is_administrator: true}) RETURN path";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
                 let n_roots = unsafe { cypher_parse_result_nroots(result) };
                 assert!(n_roots > 0, "Should have at least one root node");
-                
+
                 // Test enhanced AST printing
                 print_ast_from_result_enhanced(result);
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1013,18 +1066,18 @@ mod tests {
     fn test_lambda_function_query() {
         let query = "MATCH path = (n_0:aws_lambda_function {org_id:2, entity_info_status: 1, to_delete:false, is_publicly_accessible: true}) -[r_0:ASSOCIATES]-> (n_0_0_0:aws_iam_role {org_id:2, entity_info_status: 1, to_delete:false, is_administrator: true}) RETURN path";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
                 let n_roots = unsafe { cypher_parse_result_nroots(result) };
                 assert!(n_roots > 0, "Should have at least one root node");
-                
+
                 // Test enhanced AST printing
                 print_ast_from_result_enhanced(result);
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1032,7 +1085,7 @@ mod tests {
     fn test_invalid_cypher_query() {
         let query = "INVALID CYPHER SYNTAX {";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             // This query should have parsing errors
@@ -1042,7 +1095,7 @@ mod tests {
                 print_ast_from_result_enhanced(result);
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1050,16 +1103,16 @@ mod tests {
     fn test_empty_query() {
         let query = "";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let _n_errors = unsafe { cypher_parse_result_nerrors(result) };
             let _n_roots = unsafe { cypher_parse_result_nroots(result) };
-            
+
             // Test both printing methods with empty query
             print_ast_from_result(result);
             print_ast_from_result_enhanced(result);
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1067,7 +1120,7 @@ mod tests {
     fn test_ast_node_children_count() {
         let query = "MATCH (n:Person {name: 'Alice'}) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -1077,7 +1130,7 @@ mod tests {
                     if !root.is_null() {
                         let n_children = unsafe { cypher_astnode_nchildren(root) };
                         // n_children is unsigned, so it's always >= 0
-                        
+
                         // Test that we can iterate through children without panicking
                         for i in 0..n_children {
                             let child = unsafe { cypher_astnode_get_child(root, i) };
@@ -1089,7 +1142,7 @@ mod tests {
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1097,7 +1150,7 @@ mod tests {
     fn test_ast_node_type_handling() {
         let query = "MATCH (n) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -1107,7 +1160,7 @@ mod tests {
                     if !root.is_null() {
                         let node_type = unsafe { cypher_astnode_type(root) };
                         // node_type is unsigned, so it's always >= 0
-                        
+
                         // Test that typestr doesn't panic
                         let type_str_ptr = unsafe { cypher_astnode_typestr(node_type) };
                         if !type_str_ptr.is_null() {
@@ -1122,7 +1175,7 @@ mod tests {
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1130,19 +1183,22 @@ mod tests {
     fn test_multiple_root_nodes() {
         let query = "MATCH (n) RETURN n; MATCH (m) RETURN m";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
                 let n_roots = unsafe { cypher_parse_result_nroots(result) };
-                assert!(n_roots >= 2, "Should have at least 2 root nodes for multiple statements");
-                
+                assert!(
+                    n_roots >= 2,
+                    "Should have at least 2 root nodes for multiple statements"
+                );
+
                 // Test both printing methods
                 print_ast_from_result(result);
                 print_ast_from_result_enhanced(result);
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1156,7 +1212,7 @@ mod tests {
     fn test_make_match_graph_simple_match() {
         let query = "MATCH (n) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -1169,9 +1225,16 @@ mod tests {
                         if let Some(match_clause) = match_node {
                             match make_match_graph(match_clause) {
                                 Ok((vertices, edges)) => {
-                                    println!("Graph created successfully: {} vertices, {} edges", vertices.len(), edges.len());
+                                    println!(
+                                        "Graph created successfully: {} vertices, {} edges",
+                                        vertices.len(),
+                                        edges.len()
+                                    );
                                     // Basic validation
-                                    assert!(!vertices.is_empty(), "Should have at least one vertex");
+                                    assert!(
+                                        !vertices.is_empty(),
+                                        "Should have at least one vertex"
+                                    );
                                 }
                                 Err(e) => {
                                     println!("Graph creation failed: {}", e);
@@ -1182,7 +1245,7 @@ mod tests {
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1190,7 +1253,7 @@ mod tests {
     fn test_make_match_graph_with_relationship() {
         let query = "MATCH (a)-[r]->(b) RETURN a, r, b";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -1200,10 +1263,20 @@ mod tests {
                     if let Some(match_clause) = find_match_clause(root) {
                         match make_match_graph(match_clause) {
                             Ok((vertices, edges)) => {
-                                println!("Relationship graph: {} vertices, {} edges", vertices.len(), edges.len());
+                                println!(
+                                    "Relationship graph: {} vertices, {} edges",
+                                    vertices.len(),
+                                    edges.len()
+                                );
                                 // Should have at least 2 vertices and 1 edge
-                                assert!(vertices.len() >= 2, "Should have at least 2 vertices for relationship pattern");
-                                assert!(!edges.is_empty(), "Should have at least 1 edge for relationship pattern");
+                                assert!(
+                                    vertices.len() >= 2,
+                                    "Should have at least 2 vertices for relationship pattern"
+                                );
+                                assert!(
+                                    !edges.is_empty(),
+                                    "Should have at least 1 edge for relationship pattern"
+                                );
                             }
                             Err(e) => {
                                 println!("Relationship graph creation failed: {}", e);
@@ -1213,7 +1286,7 @@ mod tests {
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1275,7 +1348,9 @@ mod tests {
     }
 
     // Helper function to parse query and extract match graph
-    fn parse_and_extract_graph(query: &str) -> Result<(Vec<PatternVertex>, Vec<PatternEdge>), Box<dyn std::error::Error>> {
+    fn parse_and_extract_graph(
+        query: &str,
+    ) -> Result<(Vec<PatternVertex>, Vec<PatternEdge>), Box<dyn std::error::Error>> {
         let result = parse_cypher_query(query);
         if result.is_null() {
             return Err("Failed to parse query".into());
@@ -1295,10 +1370,10 @@ mod tests {
 
         let root = unsafe { cypher_parse_result_get_root(result, 0) };
         let match_clause = find_match_clause(root).ok_or("No MATCH clause found")?;
-        
+
         let graph_result = make_match_graph(match_clause);
         cleanup_parse_result(result);
-        
+
         match graph_result {
             Ok(graph) => Ok(graph),
             Err(e) => Err(e.into()),
@@ -1312,13 +1387,22 @@ mod tests {
 
     // Helper function to count vertices with specific label
     fn count_vertices_with_label(vertices: &[PatternVertex], label: &str) -> usize {
-        vertices.iter().filter(|v| v.label.as_deref() == Some(label)).count()
+        vertices
+            .iter()
+            .filter(|v| v.label.as_deref() == Some(label))
+            .count()
     }
 
     // Helper function to find edge between two vertices
     #[allow(dead_code)]
-    fn find_edge<'a>(edges: &'a [PatternEdge], source: &str, target: &str) -> Option<&'a PatternEdge> {
-        edges.iter().find(|e| e.source == source && e.target == target)
+    fn find_edge<'a>(
+        edges: &'a [PatternEdge],
+        source: &str,
+        target: &str,
+    ) -> Option<&'a PatternEdge> {
+        edges
+            .iter()
+            .find(|e| e.source == source && e.target == target)
     }
 
     // Helper function to validate graph is a path (connected, each vertex has at most 2 edges, at least 1)
@@ -1329,27 +1413,28 @@ mod tests {
         if vertices.len() == 1 {
             return edges.is_empty();
         }
-        
+
         // Check degree constraint (each vertex has at most 2 edges)
         for vertex in vertices {
-            let degree = edges.iter()
+            let degree = edges
+                .iter()
                 .filter(|e| e.source == vertex.identifier || e.target == vertex.identifier)
                 .count();
             if degree == 0 || degree > 2 {
                 return false;
             }
         }
-        
+
         // Check connectivity - must be connected as a single component
         let mut visited = std::collections::HashSet::new();
         let mut stack = vec![&vertices[0].identifier];
-        
+
         while let Some(current) = stack.pop() {
             if visited.contains(current) {
                 continue;
             }
             visited.insert(current);
-            
+
             // Add neighbors
             for edge in edges {
                 if edge.source == *current && !visited.contains(&edge.target) {
@@ -1359,7 +1444,7 @@ mod tests {
                 }
             }
         }
-        
+
         visited.len() == vertices.len()
     }
 
@@ -1371,7 +1456,7 @@ mod tests {
         if vertices.len() == 1 {
             return edges.is_empty();
         }
-        
+
         // Tree must have exactly n-1 edges for n vertices
         if edges.len() != vertices.len() - 1 {
             return false;
@@ -1380,13 +1465,13 @@ mod tests {
         // Check connectivity using simple traversal
         let mut visited = std::collections::HashSet::new();
         let mut stack = vec![&vertices[0].identifier];
-        
+
         while let Some(current) = stack.pop() {
             if visited.contains(current) {
                 continue;
             }
             visited.insert(current);
-            
+
             // Add neighbors
             for edge in edges {
                 if edge.source == *current && !visited.contains(&edge.target) {
@@ -1396,7 +1481,7 @@ mod tests {
                 }
             }
         }
-        
+
         visited.len() == vertices.len()
     }
 
@@ -1423,7 +1508,7 @@ mod tests {
         vertex: &str,
         parent: Option<&str>,
         edges: &[PatternEdge],
-        visited: &mut std::collections::HashSet<String>
+        visited: &mut std::collections::HashSet<String>,
     ) -> bool {
         visited.insert(vertex.to_string());
 
@@ -1442,7 +1527,7 @@ mod tests {
                 if parent == Some(neighbor) {
                     continue;
                 }
-                
+
                 if !visited.contains(neighbor) {
                     if has_cycle_util(neighbor, Some(vertex), edges, visited) {
                         return true;
@@ -1497,18 +1582,19 @@ mod tests {
         assert_eq!(vertices[0].label, Some("Person".to_string()));
 
         // Test 5: Multiple different node types
-        let result = parse_and_extract_graph("MATCH (a), (b:Label), (c:AnotherLabel) RETURN a, b, c");
+        let result =
+            parse_and_extract_graph("MATCH (a), (b:Label), (c:AnotherLabel) RETURN a, b, c");
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 0);
-        
+
         let a = find_vertex_by_id(&vertices, "a").unwrap();
         assert_eq!(a.label, None);
-        
+
         let b = find_vertex_by_id(&vertices, "b").unwrap();
         assert_eq!(b.label, Some("Label".to_string()));
-        
+
         let c = find_vertex_by_id(&vertices, "c").unwrap();
         assert_eq!(c.label, Some("AnotherLabel".to_string()));
     }
@@ -1521,7 +1607,7 @@ mod tests {
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
-        
+
         let edge = &edges[0];
         assert_eq!(edge.source, "a");
         assert_eq!(edge.target, "b");
@@ -1533,7 +1619,7 @@ mod tests {
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
-        
+
         let edge = &edges[0];
         assert_eq!(edge.rel_type, Some("KNOWS".to_string()));
 
@@ -1543,7 +1629,7 @@ mod tests {
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
-        
+
         let edge = &edges[0];
         assert_eq!(edge.rel_type, Some("KNOWS".to_string()));
 
@@ -1553,20 +1639,26 @@ mod tests {
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
-        
+
         let edge = &edges[0];
         assert_eq!(edge.rel_type, Some("CONNECTED".to_string()));
 
         // Test 5: Multiple relationship types
-        let result = parse_and_extract_graph("MATCH (a)-[:FOLLOWS]->(b), (c)-[:LIKES]->(d) RETURN a, b, c, d");
+        let result = parse_and_extract_graph(
+            "MATCH (a)-[:FOLLOWS]->(b), (c)-[:LIKES]->(d) RETURN a, b, c, d",
+        );
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 4);
         assert_eq!(edges.len(), 2);
-        
+
         // Verify both relationship types exist
-        let has_follows = edges.iter().any(|e| e.rel_type == Some("FOLLOWS".to_string()));
-        let has_likes = edges.iter().any(|e| e.rel_type == Some("LIKES".to_string()));
+        let has_follows = edges
+            .iter()
+            .any(|e| e.rel_type == Some("FOLLOWS".to_string()));
+        let has_likes = edges
+            .iter()
+            .any(|e| e.rel_type == Some("LIKES".to_string()));
         assert!(has_follows && has_likes);
     }
 
@@ -1581,7 +1673,8 @@ mod tests {
         assert!(is_path_graph(&vertices, &edges));
 
         // Test 2: Medium path (3 nodes, 2 edges)
-        let result = parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b)-[:WORKS_AT]->(c) RETURN a, b, c");
+        let result =
+            parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b)-[:WORKS_AT]->(c) RETURN a, b, c");
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 3);
@@ -1589,7 +1682,8 @@ mod tests {
         assert!(is_path_graph(&vertices, &edges));
 
         // Test 3: Longer path (4 nodes, 3 edges)
-        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d) RETURN a, b, c, d");
+        let result =
+            parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d) RETURN a, b, c, d");
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 4);
@@ -1597,7 +1691,9 @@ mod tests {
         assert!(is_path_graph(&vertices, &edges));
 
         // Test 4: Very long path (5 nodes, 4 edges)
-        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d)-[:R4]->(e) RETURN a, b, c, d, e");
+        let result = parse_and_extract_graph(
+            "MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d)-[:R4]->(e) RETURN a, b, c, d, e",
+        );
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 5);
@@ -1605,7 +1701,9 @@ mod tests {
         assert!(is_path_graph(&vertices, &edges));
 
         // Test 5: Extra long path (6 nodes, 5 edges)
-        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d)-[:R4]->(e)-[:R5]->(f) RETURN a, b, c, d, e, f");
+        let result = parse_and_extract_graph(
+            "MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d)-[:R4]->(e)-[:R5]->(f) RETURN a, b, c, d, e, f",
+        );
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 6);
@@ -1623,28 +1721,34 @@ mod tests {
         assert_eq!(edges.len(), 0);
 
         // Test 2: Two separate simple relationships
-        let result = parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b), (c)-[:LIKES]->(d) RETURN a, b, c, d");
+        let result =
+            parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b), (c)-[:LIKES]->(d) RETURN a, b, c, d");
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 4);
         assert_eq!(edges.len(), 2);
 
         // Test 3: Mix of single nodes and relationships
-        let result = parse_and_extract_graph("MATCH (isolated), (a)-[:CONNECTS]->(b) RETURN isolated, a, b");
+        let result =
+            parse_and_extract_graph("MATCH (isolated), (a)-[:CONNECTS]->(b) RETURN isolated, a, b");
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 1);
 
         // Test 4: Three separate patterns
-        let result = parse_and_extract_graph("MATCH (single), (a)-[:R1]->(b), (c)-[:R2]->(d)-[:R3]->(e) RETURN *");
+        let result = parse_and_extract_graph(
+            "MATCH (single), (a)-[:R1]->(b), (c)-[:R2]->(d)-[:R3]->(e) RETURN *",
+        );
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 6); // single + a,b + c,d,e
         assert_eq!(edges.len(), 3); // 0 + 1 + 2
 
         // Test 5: Multiple complex patterns
-        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c), (d)-[:R3]->(e), (f) RETURN *");
+        let result = parse_and_extract_graph(
+            "MATCH (a)-[:R1]->(b)-[:R2]->(c), (d)-[:R3]->(e), (f) RETURN *",
+        );
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 6); // a,b,c + d,e + f
@@ -1654,23 +1758,27 @@ mod tests {
     #[test]
     fn test_mixed_labels_and_types() {
         // Test 1: Mixed labeled and unlabeled nodes
-        let result = parse_and_extract_graph("MATCH (person:Person)-[:KNOWS]->(friend) RETURN person, friend");
+        let result = parse_and_extract_graph(
+            "MATCH (person:Person)-[:KNOWS]->(friend) RETURN person, friend",
+        );
         assert!(result.is_ok());
         let (vertices, _edges) = result.unwrap();
         assert_eq!(vertices.len(), 2);
-        
+
         let person = find_vertex_by_id(&vertices, "person").unwrap();
         assert_eq!(person.label, Some("Person".to_string()));
-        
+
         let friend = find_vertex_by_id(&vertices, "friend").unwrap();
         assert_eq!(friend.label, None);
 
         // Test 2: Multiple different labels
-        let result = parse_and_extract_graph("MATCH (p:Person)-[:WORKS_AT]->(c:Company)-[:LOCATED_IN]->(city:City) RETURN p, c, city");
+        let result = parse_and_extract_graph(
+            "MATCH (p:Person)-[:WORKS_AT]->(c:Company)-[:LOCATED_IN]->(city:City) RETURN p, c, city",
+        );
         assert!(result.is_ok());
         let (vertices, _edges) = result.unwrap();
         assert_eq!(vertices.len(), 3);
-        
+
         assert_eq!(count_vertices_with_label(&vertices, "Person"), 1);
         assert_eq!(count_vertices_with_label(&vertices, "Company"), 1);
         assert_eq!(count_vertices_with_label(&vertices, "City"), 1);
@@ -1681,19 +1789,21 @@ mod tests {
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 2);
-        
+
         let typed_rels = edges.iter().filter(|e| e.rel_type.is_some()).count();
         let untyped_rels = edges.iter().filter(|e| e.rel_type.is_none()).count();
         assert_eq!(typed_rels, 1);
         assert_eq!(untyped_rels, 1);
 
         // Test 4: Complex mix
-        let result = parse_and_extract_graph("MATCH (p1:Person)-[:KNOWS]-(p2:Person), (c:Company)-[]->(l) RETURN *");
+        let result = parse_and_extract_graph(
+            "MATCH (p1:Person)-[:KNOWS]-(p2:Person), (c:Company)-[]->(l) RETURN *",
+        );
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 4);
         assert_eq!(edges.len(), 2);
-        
+
         assert_eq!(count_vertices_with_label(&vertices, "Person"), 2);
         assert_eq!(count_vertices_with_label(&vertices, "Company"), 1);
     }
@@ -1709,26 +1819,61 @@ mod tests {
         assert!(!has_cycle(&vertices, &edges));
 
         // Test 2: Star topology (tree but not path)
-        // Note: This might be hard to represent in a single MATCH pattern, 
+        // Note: This might be hard to represent in a single MATCH pattern,
         // but we can test the validation functions with constructed data
         let vertices = vec![
-            PatternVertex { identifier: "center".to_string(), label: None, properties: HashMap::new() },
-            PatternVertex { identifier: "leaf1".to_string(), label: None, properties: HashMap::new() },
-            PatternVertex { identifier: "leaf2".to_string(), label: None, properties: HashMap::new() },
-            PatternVertex { identifier: "leaf3".to_string(), label: None, properties: HashMap::new() },
+            PatternVertex {
+                identifier: "center".to_string(),
+                label: None,
+                properties: HashMap::new(),
+            },
+            PatternVertex {
+                identifier: "leaf1".to_string(),
+                label: None,
+                properties: HashMap::new(),
+            },
+            PatternVertex {
+                identifier: "leaf2".to_string(),
+                label: None,
+                properties: HashMap::new(),
+            },
+            PatternVertex {
+                identifier: "leaf3".to_string(),
+                label: None,
+                properties: HashMap::new(),
+            },
         ];
         let edges = vec![
-            PatternEdge { source: "center".to_string(), target: "leaf1".to_string(), rel_type: None, properties: HashMap::new(), direction: RelationshipDirection::Outbound },
-            PatternEdge { source: "center".to_string(), target: "leaf2".to_string(), rel_type: None, properties: HashMap::new(), direction: RelationshipDirection::Outbound },
-            PatternEdge { source: "center".to_string(), target: "leaf3".to_string(), rel_type: None, properties: HashMap::new(), direction: RelationshipDirection::Outbound },
+            PatternEdge {
+                source: "center".to_string(),
+                target: "leaf1".to_string(),
+                rel_type: None,
+                properties: HashMap::new(),
+                direction: RelationshipDirection::Outbound,
+            },
+            PatternEdge {
+                source: "center".to_string(),
+                target: "leaf2".to_string(),
+                rel_type: None,
+                properties: HashMap::new(),
+                direction: RelationshipDirection::Outbound,
+            },
+            PatternEdge {
+                source: "center".to_string(),
+                target: "leaf3".to_string(),
+                rel_type: None,
+                properties: HashMap::new(),
+                direction: RelationshipDirection::Outbound,
+            },
         ];
-        
+
         assert!(!is_path_graph(&vertices, &edges)); // Not a path (center has degree 3)
-        assert!(is_tree_graph(&vertices, &edges));   // But is a tree
-        assert!(!has_cycle(&vertices, &edges));      // No cycles
+        assert!(is_tree_graph(&vertices, &edges)); // But is a tree
+        assert!(!has_cycle(&vertices, &edges)); // No cycles
 
         // Test 3: Disconnected components
-        let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b), (c)-[:R2]->(d) RETURN a, b, c, d");
+        let result =
+            parse_and_extract_graph("MATCH (a)-[:R1]->(b), (c)-[:R2]->(d) RETURN a, b, c, d");
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert!(!is_path_graph(&vertices, &edges)); // Not connected as single path
@@ -1743,7 +1888,7 @@ mod tests {
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
-        
+
         // Both vertices should have auto-generated identifiers
         for vertex in &vertices {
             assert!(vertex.identifier.starts_with("n_") || !vertex.identifier.is_empty());
@@ -1754,10 +1899,10 @@ mod tests {
         assert!(result.is_ok());
         let (vertices, _edges) = result.unwrap();
         assert_eq!(vertices.len(), 2);
-        
+
         let named = find_vertex_by_id(&vertices, "named");
         assert!(named.is_some());
-        
+
         // The other vertex should have auto-generated identifier
         let other = vertices.iter().find(|v| v.identifier != "named").unwrap();
         assert!(other.identifier.starts_with("n_") || other.identifier != "named");
@@ -1766,7 +1911,9 @@ mod tests {
     #[test]
     fn test_complex_real_world_patterns() {
         // Test 1: Social network pattern
-        let result = parse_and_extract_graph("MATCH (user:User)-[:FOLLOWS]->(friend:User)-[:POSTS]->(content:Post) RETURN user, friend, content");
+        let result = parse_and_extract_graph(
+            "MATCH (user:User)-[:FOLLOWS]->(friend:User)-[:POSTS]->(content:Post) RETURN user, friend, content",
+        );
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 3);
@@ -1774,39 +1921,47 @@ mod tests {
         assert!(is_path_graph(&vertices, &edges));
 
         // Test 2: Organizational hierarchy
-        let result = parse_and_extract_graph("MATCH (emp:Employee)-[:REPORTS_TO]->(mgr:Manager)-[:WORKS_FOR]->(dept:Department) RETURN emp, mgr, dept");
+        let result = parse_and_extract_graph(
+            "MATCH (emp:Employee)-[:REPORTS_TO]->(mgr:Manager)-[:WORKS_FOR]->(dept:Department) RETURN emp, mgr, dept",
+        );
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 2);
-        
+
         assert_eq!(count_vertices_with_label(&vertices, "Employee"), 1);
         assert_eq!(count_vertices_with_label(&vertices, "Manager"), 1);
         assert_eq!(count_vertices_with_label(&vertices, "Department"), 1);
 
         // Test 3: Technology stack pattern
-        let result = parse_and_extract_graph("MATCH (app:Application)-[:RUNS_ON]->(server:Server)-[:HOSTS]->(db:Database) RETURN app, server, db");
+        let result = parse_and_extract_graph(
+            "MATCH (app:Application)-[:RUNS_ON]->(server:Server)-[:HOSTS]->(db:Database) RETURN app, server, db",
+        );
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 2);
-        
-        let runs_on = edges.iter().any(|e| e.rel_type == Some("RUNS_ON".to_string()));
-        let hosts = edges.iter().any(|e| e.rel_type == Some("HOSTS".to_string()));
+
+        let runs_on = edges
+            .iter()
+            .any(|e| e.rel_type == Some("RUNS_ON".to_string()));
+        let hosts = edges
+            .iter()
+            .any(|e| e.rel_type == Some("HOSTS".to_string()));
         assert!(runs_on && hosts);
 
         // Test 4: Supply chain pattern
-        let result = parse_and_extract_graph("MATCH (supplier:Supplier)-[:SUPPLIES]->(manufacturer:Manufacturer)-[:PRODUCES]->(product:Product)-[:SOLD_TO]->(customer:Customer) RETURN *");
+        let result = parse_and_extract_graph(
+            "MATCH (supplier:Supplier)-[:SUPPLIES]->(manufacturer:Manufacturer)-[:PRODUCES]->(product:Product)-[:SOLD_TO]->(customer:Customer) RETURN *",
+        );
         assert!(result.is_ok());
         let (vertices, edges) = result.unwrap();
         assert_eq!(vertices.len(), 4);
         assert_eq!(edges.len(), 3);
         assert!(is_path_graph(&vertices, &edges));
-        
+
         // Verify all relationship types
-        let rel_types: Vec<String> = edges.iter()
-            .filter_map(|e| e.rel_type.clone())
-            .collect();
+        let rel_types: Vec<String> = edges.iter().filter_map(|e| e.rel_type.clone()).collect();
         assert!(rel_types.contains(&"SUPPLIES".to_string()));
         assert!(rel_types.contains(&"PRODUCES".to_string()));
         assert!(rel_types.contains(&"SOLD_TO".to_string()));
@@ -1835,7 +1990,9 @@ mod tests {
     #[test]
     fn test_graph_printing() {
         // Test that graph printing doesn't panic with various patterns
-        let result = parse_and_extract_graph("MATCH (p:Person {name: 'Alice'})-[:KNOWS {since: 2020}]->(f:Friend) RETURN p, f");
+        let result = parse_and_extract_graph(
+            "MATCH (p:Person {name: 'Alice'})-[:KNOWS {since: 2020}]->(f:Friend) RETURN p, f",
+        );
         if let Ok((vertices, edges)) = result {
             print_pattern_graph(&vertices, &edges);
             // This should not panic
@@ -1847,10 +2004,10 @@ mod tests {
         print_pattern_graph(&vertices, &edges);
 
         // Test with single vertex
-        let vertices = vec![PatternVertex { 
-            identifier: "test".to_string(), 
-            label: Some("TestLabel".to_string()), 
-            properties: HashMap::new() 
+        let vertices = vec![PatternVertex {
+            identifier: "test".to_string(),
+            label: Some("TestLabel".to_string()),
+            properties: HashMap::new(),
         }];
         let edges = vec![];
         print_pattern_graph(&vertices, &edges);
@@ -1869,7 +2026,7 @@ mod tests {
         // Test with a non-map AST node (should return None)
         let query = "MATCH (n) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -1884,7 +2041,7 @@ mod tests {
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1892,7 +2049,7 @@ mod tests {
     fn test_extract_properties_empty_map() {
         let query = "MATCH (n {}) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -1904,15 +2061,15 @@ mod tests {
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
-    #[test] 
+    #[test]
     fn test_extract_properties_string_values() {
         let query = "MATCH (n {name: 'Alice', city: 'Wonderland'}) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -1920,14 +2077,14 @@ mod tests {
                     let properties = extract_properties(map_node);
                     assert!(properties.is_some());
                     let props = properties.unwrap();
-                    
+
                     assert_eq!(props.get("name"), Some(&"Alice".to_string()));
                     assert_eq!(props.get("city"), Some(&"Wonderland".to_string()));
                     assert_eq!(props.len(), 2);
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1935,7 +2092,7 @@ mod tests {
     fn test_extract_properties_integer_values() {
         let query = "MATCH (n {age: 30, count: 42}) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -1943,14 +2100,14 @@ mod tests {
                     let properties = extract_properties(map_node);
                     assert!(properties.is_some());
                     let props = properties.unwrap();
-                    
+
                     assert_eq!(props.get("age"), Some(&"30".to_string()));
                     assert_eq!(props.get("count"), Some(&"42".to_string()));
                     assert_eq!(props.len(), 2);
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1958,7 +2115,7 @@ mod tests {
     fn test_extract_properties_boolean_values() {
         let query = "MATCH (n {active: true, deleted: false}) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -1966,14 +2123,14 @@ mod tests {
                     let properties = extract_properties(map_node);
                     assert!(properties.is_some());
                     let props = properties.unwrap();
-                    
+
                     assert_eq!(props.get("active"), Some(&"true".to_string()));
                     assert_eq!(props.get("deleted"), Some(&"false".to_string()));
                     assert_eq!(props.len(), 2);
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -1981,7 +2138,7 @@ mod tests {
     fn test_extract_properties_float_values() {
         let query = "MATCH (n {height: 5.9, weight: 70.5}) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -1989,14 +2146,14 @@ mod tests {
                     let properties = extract_properties(map_node);
                     assert!(properties.is_some());
                     let props = properties.unwrap();
-                    
+
                     assert_eq!(props.get("height"), Some(&"5.9".to_string()));
                     assert_eq!(props.get("weight"), Some(&"70.5".to_string()));
                     assert_eq!(props.len(), 2);
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -2004,7 +2161,7 @@ mod tests {
     fn test_extract_properties_mixed_types() {
         let query = "MATCH (n {name: 'Alice', age: 30, active: true, score: 95.5}) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -2012,7 +2169,7 @@ mod tests {
                     let properties = extract_properties(map_node);
                     assert!(properties.is_some());
                     let props = properties.unwrap();
-                    
+
                     assert_eq!(props.get("name"), Some(&"Alice".to_string()));
                     assert_eq!(props.get("age"), Some(&"30".to_string()));
                     assert_eq!(props.get("active"), Some(&"true".to_string()));
@@ -2021,7 +2178,7 @@ mod tests {
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -2029,7 +2186,7 @@ mod tests {
     fn test_extract_properties_null_values() {
         let query = "MATCH (n {optional: null}) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -2037,13 +2194,13 @@ mod tests {
                     let properties = extract_properties(map_node);
                     assert!(properties.is_some());
                     let props = properties.unwrap();
-                    
+
                     assert_eq!(props.get("optional"), Some(&"null".to_string()));
                     assert_eq!(props.len(), 1);
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -2051,7 +2208,7 @@ mod tests {
     fn test_extract_properties_real_world_s3_bucket() {
         let query = "MATCH (n:aws_s3_bucket {org_id: 2, to_delete: false, default_encryption_type: 'aws:kms'}) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -2059,15 +2216,18 @@ mod tests {
                     let properties = extract_properties(map_node);
                     assert!(properties.is_some());
                     let props = properties.unwrap();
-                    
+
                     assert_eq!(props.get("org_id"), Some(&"2".to_string()));
                     assert_eq!(props.get("to_delete"), Some(&"false".to_string()));
-                    assert_eq!(props.get("default_encryption_type"), Some(&"aws:kms".to_string()));
+                    assert_eq!(
+                        props.get("default_encryption_type"),
+                        Some(&"aws:kms".to_string())
+                    );
                     assert_eq!(props.len(), 3);
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -2075,7 +2235,7 @@ mod tests {
     fn test_extract_properties_real_world_complex() {
         let query = "MATCH (n:aws_ec2_instance {org_id: 2, to_delete: false, entity_info_status:1, is_publicly_accessible: true}) RETURN n";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -2083,16 +2243,19 @@ mod tests {
                     let properties = extract_properties(map_node);
                     assert!(properties.is_some());
                     let props = properties.unwrap();
-                    
+
                     assert_eq!(props.get("org_id"), Some(&"2".to_string()));
                     assert_eq!(props.get("to_delete"), Some(&"false".to_string()));
                     assert_eq!(props.get("entity_info_status"), Some(&"1".to_string()));
-                    assert_eq!(props.get("is_publicly_accessible"), Some(&"true".to_string()));
+                    assert_eq!(
+                        props.get("is_publicly_accessible"),
+                        Some(&"true".to_string())
+                    );
                     assert_eq!(props.len(), 4);
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -2100,7 +2263,7 @@ mod tests {
     fn test_extract_properties_relationship_properties() {
         let query = "MATCH (a)-[r:KNOWS {since: 2020, strength: 'strong'}]->(b) RETURN a, r, b";
         let result = parse_cypher_query(query);
-        
+
         if !result.is_null() {
             let n_errors = unsafe { cypher_parse_result_nerrors(result) };
             if n_errors == 0 {
@@ -2108,14 +2271,14 @@ mod tests {
                     let properties = extract_properties(map_node);
                     assert!(properties.is_some());
                     let props = properties.unwrap();
-                    
+
                     assert_eq!(props.get("since"), Some(&"2020".to_string()));
                     assert_eq!(props.get("strength"), Some(&"strong".to_string()));
                     assert_eq!(props.len(), 2);
                 }
             }
         }
-        
+
         cleanup_parse_result(result);
     }
 
@@ -2134,7 +2297,9 @@ mod tests {
     }
 
     // Helper function to find a map node in a parsed query
-    fn find_map_node_in_query(result: *const cypher_parse_result_t) -> Option<*const cypher_astnode_t> {
+    fn find_map_node_in_query(
+        result: *const cypher_parse_result_t,
+    ) -> Option<*const cypher_astnode_t> {
         if result.is_null() {
             return None;
         }
@@ -2146,7 +2311,7 @@ mod tests {
                 return Some(map_node);
             }
         }
-        
+
         None
     }
 
@@ -2158,7 +2323,7 @@ mod tests {
 
         let node_type = unsafe { cypher_astnode_type(node) };
         let cypher_map = unsafe { CYPHER_AST_MAP };
-        
+
         if node_type == cypher_map {
             return Some(node);
         }
@@ -2169,6 +2334,163 @@ mod tests {
             let child = unsafe { cypher_astnode_get_child(node, i) };
             if let Some(map_node) = find_map_node_recursive(child) {
                 return Some(map_node);
+            }
+        }
+
+        None
+    }
+
+    // TESTS FOR determine_relationship_direction FUNCTION
+
+    #[test]
+    fn test_relationship_direction_outbound() {
+        let query = "MATCH (v) -[e]-> (w) RETURN v, e, w";
+        let result = parse_cypher_query(query);
+
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(match_clause) = find_match_clause_from_result(result) {
+                    match make_match_graph(match_clause) {
+                        Ok((vertices, edges)) => {
+                            assert_eq!(vertices.len(), 2);
+                            assert_eq!(edges.len(), 1);
+
+                            let edge = &edges[0];
+                            assert_eq!(edge.direction, RelationshipDirection::Outbound);
+                            assert_eq!(edge.source, "v");
+                            assert_eq!(edge.target, "w");
+                        }
+                        Err(e) => {
+                            println!("Failed to create graph: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_relationship_direction_inbound() {
+        let query = "MATCH (v) <-[e]- (w) RETURN v, e, w";
+        let result = parse_cypher_query(query);
+
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(match_clause) = find_match_clause_from_result(result) {
+                    match make_match_graph(match_clause) {
+                        Ok((vertices, edges)) => {
+                            assert_eq!(vertices.len(), 2);
+                            assert_eq!(edges.len(), 1);
+
+                            let edge = &edges[0];
+                            assert_eq!(edge.direction, RelationshipDirection::Inbound);
+                            assert_eq!(edge.source, "v");
+                            assert_eq!(edge.target, "w");
+                        }
+                        Err(e) => {
+                            println!("Failed to create graph: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_relationship_direction_bidirectional() {
+        let query = "MATCH (v) -[e]- (w) RETURN v, e, w";
+        let result = parse_cypher_query(query);
+
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(match_clause) = find_match_clause_from_result(result) {
+                    match make_match_graph(match_clause) {
+                        Ok((vertices, edges)) => {
+                            assert_eq!(vertices.len(), 2);
+                            assert_eq!(edges.len(), 1);
+
+                            let edge = &edges[0];
+                            assert_eq!(edge.direction, RelationshipDirection::Bidirectional);
+                            assert_eq!(edge.source, "v");
+                            assert_eq!(edge.target, "w");
+                        }
+                        Err(e) => {
+                            println!("Failed to create graph: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_multiple_relationship_directions() {
+        let query = "MATCH (a) -[r1]-> (b) <-[r2]- (c), (d) -[r3]- (e) RETURN a, b, c, d, e";
+        let result = parse_cypher_query(query);
+
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(match_clause) = find_match_clause_from_result(result) {
+                    match make_match_graph(match_clause) {
+                        Ok((vertices, edges)) => {
+                            assert_eq!(vertices.len(), 5);
+                            assert_eq!(edges.len(), 3);
+
+                            // Check that we have all three types of directions
+                            let has_outbound = edges
+                                .iter()
+                                .any(|e| e.direction == RelationshipDirection::Outbound);
+                            let has_inbound = edges
+                                .iter()
+                                .any(|e| e.direction == RelationshipDirection::Inbound);
+                            let has_bidirectional = edges
+                                .iter()
+                                .any(|e| e.direction == RelationshipDirection::Bidirectional);
+
+                            assert!(
+                                has_outbound,
+                                "Should have at least one outbound relationship"
+                            );
+                            assert!(has_inbound, "Should have at least one inbound relationship");
+                            assert!(
+                                has_bidirectional,
+                                "Should have at least one bidirectional relationship"
+                            );
+                        }
+                        Err(e) => {
+                            println!("Failed to create graph: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        cleanup_parse_result(result);
+    }
+
+    // Helper function to find match clause from parse result
+    fn find_match_clause_from_result(
+        result: *const cypher_parse_result_t,
+    ) -> Option<*const cypher_astnode_t> {
+        if result.is_null() {
+            return None;
+        }
+
+        let n_roots = unsafe { cypher_parse_result_nroots(result) };
+        for i in 0..n_roots {
+            let root = unsafe { cypher_parse_result_get_root(result, i) };
+            if let Some(match_clause) = find_match_clause(root) {
+                return Some(match_clause);
             }
         }
 
