@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use libcypher_parser_sys::*;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -125,7 +126,7 @@ pub struct PatternVertex {
     /// Label for the node (can be empty)
     pub label: Option<String>,
     /// Property values as key-value pairs
-    pub properties: HashMap<String, String>,
+    pub properties: HashMap<String, Value>,
 }
 
 /// Represents an edge (relationship pattern) in the pattern graph
@@ -138,7 +139,7 @@ pub struct PatternEdge {
     /// Relationship type (can be empty)
     pub rel_type: Option<String>,
     /// Property values as key-value pairs
-    pub properties: HashMap<String, String>,
+    pub properties: HashMap<String, Value>,
     /// Direction of the relationship
     pub direction: RelationshipDirection,
 }
@@ -522,7 +523,7 @@ fn extract_reltype(node: *const cypher_astnode_t) -> Option<String> {
 }
 
 /// Extracts properties from a map AST node
-fn extract_properties(node: *const cypher_astnode_t) -> Option<HashMap<String, String>> {
+fn extract_properties(node: *const cypher_astnode_t) -> Option<HashMap<String, Value>> {
     if node.is_null() {
         return None;
     }
@@ -551,9 +552,9 @@ fn extract_properties(node: *const cypher_astnode_t) -> Option<HashMap<String, S
 
         // Extract the key string from the property name node
         if let Some(key_str) = extract_property_name(key_node) {
-            // Extract the value string from the expression node
-            if let Some(value_str) = extract_expression_value(value_node) {
-                properties.insert(key_str, value_str);
+            // Extract the value from the expression node
+            if let Some(value) = extract_expression_value(value_node) {
+                properties.insert(key_str, value);
             }
         }
     }
@@ -585,8 +586,8 @@ fn extract_property_name(node: *const cypher_astnode_t) -> Option<String> {
     None
 }
 
-/// Extracts a string value from various expression node types
-fn extract_expression_value(node: *const cypher_astnode_t) -> Option<String> {
+/// Extracts a value from various expression node types
+fn extract_expression_value(node: *const cypher_astnode_t) -> Option<Value> {
     if node.is_null() {
         return None;
     }
@@ -607,21 +608,30 @@ fn extract_expression_value(node: *const cypher_astnode_t) -> Option<String> {
                 let str_ptr = cypher_ast_string_get_value(node);
                 if !str_ptr.is_null() {
                     let c_str = CStr::from_ptr(str_ptr);
-                    return Some(c_str.to_string_lossy().to_string());
+                    let string_val = c_str.to_string_lossy().to_string();
+                    return Some(Value::String(string_val));
                 }
             }
             x if x == cypher_integer => {
                 let int_ptr = cypher_ast_integer_get_valuestr(node);
                 if !int_ptr.is_null() {
                     let c_str = CStr::from_ptr(int_ptr);
-                    return Some(c_str.to_string_lossy().to_string());
+                    let int_str = c_str.to_string_lossy();
+                    if let Ok(int_val) = int_str.parse::<i64>() {
+                        return Some(Value::Number(serde_json::Number::from(int_val)));
+                    }
                 }
             }
             x if x == cypher_float => {
                 let float_ptr = cypher_ast_float_get_valuestr(node);
                 if !float_ptr.is_null() {
                     let c_str = CStr::from_ptr(float_ptr);
-                    return Some(c_str.to_string_lossy().to_string());
+                    let float_str = c_str.to_string_lossy();
+                    if let Ok(float_val) = float_str.parse::<f64>() {
+                        if let Some(number) = serde_json::Number::from_f64(float_val) {
+                            return Some(Value::Number(number));
+                        }
+                    }
                 }
             }
             x if x == cypher_boolean => {
@@ -632,32 +642,32 @@ fn extract_expression_value(node: *const cypher_astnode_t) -> Option<String> {
                     if !child.is_null() {
                         let child_type = cypher_astnode_type(child);
                         if child_type == cypher_true {
-                            return Some("true".to_string());
+                            return Some(Value::Bool(true));
                         } else if child_type == cypher_false {
-                            return Some("false".to_string());
+                            return Some(Value::Bool(false));
                         }
                     }
                 }
             }
             x if x == cypher_true => {
-                return Some("true".to_string());
+                return Some(Value::Bool(true));
             }
             x if x == cypher_false => {
-                return Some("false".to_string());
+                return Some(Value::Bool(false));
             }
             x if x == cypher_null => {
-                return Some("null".to_string());
+                return Some(Value::Null);
             }
             _ => {
-                // For other expression types, return a generic representation
+                // For other expression types, return a string representation
                 let type_str_ptr = cypher_astnode_typestr(node_type);
                 if !type_str_ptr.is_null() {
                     let type_str = CStr::from_ptr(type_str_ptr.cast::<c_char>())
                         .to_string_lossy()
                         .to_string();
-                    return Some(format!("<{type_str}>"));
+                    return Some(Value::String(format!("<{type_str}>")));
                 }
-                return Some("<unknown>".to_string());
+                return Some(Value::String("<unknown>".to_string()));
             }
         }
     }
@@ -838,17 +848,31 @@ pub fn print_pattern_graph(vertices: &[PatternVertex], edges: &[PatternEdge]) {
         println!("No edges found.");
     } else {
         for edge in edges {
-            // Print edge information on first line
-            let direction_arrow = match edge.direction {
-                RelationshipDirection::Outbound => "->",
-                RelationshipDirection::Inbound => "<-",
-                RelationshipDirection::Bidirectional => "<->",
-            };
-            
+            // Print edge information on first line in Cypher format
             let edge_info = if let Some(ref rel_type) = edge.rel_type {
-                format!("Edge: {} -[{}]{} {}", edge.source, rel_type, direction_arrow, edge.target)
+                match edge.direction {
+                    RelationshipDirection::Outbound => {
+                        format!("Edge: {} -[{}]-> {}", edge.source, rel_type, edge.target)
+                    }
+                    RelationshipDirection::Inbound => {
+                        format!("Edge: {} <-[{}]- {}", edge.source, rel_type, edge.target)
+                    }
+                    RelationshipDirection::Bidirectional => {
+                        format!("Edge: {} -[{}]- {}", edge.source, rel_type, edge.target)
+                    }
+                }
             } else {
-                format!("Edge: {} -{} {}", edge.source, direction_arrow, edge.target)
+                match edge.direction {
+                    RelationshipDirection::Outbound => {
+                        format!("Edge: {} --> {}", edge.source, edge.target)
+                    }
+                    RelationshipDirection::Inbound => {
+                        format!("Edge: {} <-- {}", edge.source, edge.target)
+                    }
+                    RelationshipDirection::Bidirectional => {
+                        format!("Edge: {} --- {}", edge.source, edge.target)
+                    }
+                }
             };
             println!("{edge_info}");
             
@@ -1207,7 +1231,7 @@ mod tests {
                                     );
                                 }
                                 Err(e) => {
-                                    println!("Graph creation failed: {}", e);
+                                    println!("Graph creation failed: {e}");
                                 }
                             }
                         }
@@ -1249,7 +1273,7 @@ mod tests {
                                 );
                             }
                             Err(e) => {
-                                println!("Relationship graph creation failed: {}", e);
+                                println!("Relationship graph creation failed: {e}");
                             }
                         }
                     }
@@ -1267,14 +1291,14 @@ mod tests {
             label: Some("Person".to_string()),
             properties: {
                 let mut props = HashMap::new();
-                props.insert("name".to_string(), "Alice".to_string());
+                props.insert("name".to_string(), Value::String("Alice".to_string()));
                 props
             },
         };
 
         assert_eq!(vertex.identifier, "n");
         assert_eq!(vertex.label, Some("Person".to_string()));
-        assert_eq!(vertex.properties.get("name"), Some(&"Alice".to_string()));
+        assert_eq!(vertex.properties.get("name"), Some(&Value::String("Alice".to_string())));
     }
 
     #[test]
@@ -1465,10 +1489,9 @@ mod tests {
         let mut visited = std::collections::HashSet::new();
 
         for vertex in vertices {
-            if !visited.contains(&vertex.identifier) {
-                if has_cycle_util(&vertex.identifier, None, edges, &mut visited) {
-                    return true;
-                }
+            if !visited.contains(&vertex.identifier)
+                && has_cycle_util(&vertex.identifier, None, edges, &mut visited) {
+                return true;
             }
         }
         false
@@ -2048,8 +2071,8 @@ mod tests {
                     assert!(properties.is_some());
                     let props = properties.unwrap();
 
-                    assert_eq!(props.get("name"), Some(&"Alice".to_string()));
-                    assert_eq!(props.get("city"), Some(&"Wonderland".to_string()));
+                    assert_eq!(props.get("name"), Some(&Value::String("Alice".to_string())));
+                    assert_eq!(props.get("city"), Some(&Value::String("Wonderland".to_string())));
                     assert_eq!(props.len(), 2);
                 }
             }
@@ -2071,8 +2094,8 @@ mod tests {
                     assert!(properties.is_some());
                     let props = properties.unwrap();
 
-                    assert_eq!(props.get("age"), Some(&"30".to_string()));
-                    assert_eq!(props.get("count"), Some(&"42".to_string()));
+                    assert_eq!(props.get("age"), Some(&Value::Number(serde_json::Number::from(30))));
+                    assert_eq!(props.get("count"), Some(&Value::Number(serde_json::Number::from(42))));
                     assert_eq!(props.len(), 2);
                 }
             }
@@ -2094,8 +2117,8 @@ mod tests {
                     assert!(properties.is_some());
                     let props = properties.unwrap();
 
-                    assert_eq!(props.get("active"), Some(&"true".to_string()));
-                    assert_eq!(props.get("deleted"), Some(&"false".to_string()));
+                    assert_eq!(props.get("active"), Some(&Value::Bool(true)));
+                    assert_eq!(props.get("deleted"), Some(&Value::Bool(false)));
                     assert_eq!(props.len(), 2);
                 }
             }
@@ -2117,8 +2140,8 @@ mod tests {
                     assert!(properties.is_some());
                     let props = properties.unwrap();
 
-                    assert_eq!(props.get("height"), Some(&"5.9".to_string()));
-                    assert_eq!(props.get("weight"), Some(&"70.5".to_string()));
+                    assert_eq!(props.get("height"), Some(&Value::Number(serde_json::Number::from_f64(5.9).unwrap())));
+                    assert_eq!(props.get("weight"), Some(&Value::Number(serde_json::Number::from_f64(70.5).unwrap())));
                     assert_eq!(props.len(), 2);
                 }
             }
@@ -2140,10 +2163,10 @@ mod tests {
                     assert!(properties.is_some());
                     let props = properties.unwrap();
 
-                    assert_eq!(props.get("name"), Some(&"Alice".to_string()));
-                    assert_eq!(props.get("age"), Some(&"30".to_string()));
-                    assert_eq!(props.get("active"), Some(&"true".to_string()));
-                    assert_eq!(props.get("score"), Some(&"95.5".to_string()));
+                    assert_eq!(props.get("name"), Some(&Value::String("Alice".to_string())));
+                    assert_eq!(props.get("age"), Some(&Value::Number(serde_json::Number::from(30))));
+                    assert_eq!(props.get("active"), Some(&Value::Bool(true)));
+                    assert_eq!(props.get("score"), Some(&Value::Number(serde_json::Number::from_f64(95.5).unwrap())));
                     assert_eq!(props.len(), 4);
                 }
             }
@@ -2165,7 +2188,7 @@ mod tests {
                     assert!(properties.is_some());
                     let props = properties.unwrap();
 
-                    assert_eq!(props.get("optional"), Some(&"null".to_string()));
+                    assert_eq!(props.get("optional"), Some(&Value::Null));
                     assert_eq!(props.len(), 1);
                 }
             }
@@ -2187,11 +2210,11 @@ mod tests {
                     assert!(properties.is_some());
                     let props = properties.unwrap();
 
-                    assert_eq!(props.get("org_id"), Some(&"2".to_string()));
-                    assert_eq!(props.get("to_delete"), Some(&"false".to_string()));
+                    assert_eq!(props.get("org_id"), Some(&Value::Number(serde_json::Number::from(2))));
+                    assert_eq!(props.get("to_delete"), Some(&Value::Bool(false)));
                     assert_eq!(
                         props.get("default_encryption_type"),
-                        Some(&"aws:kms".to_string())
+                        Some(&Value::String("aws:kms".to_string()))
                     );
                     assert_eq!(props.len(), 3);
                 }
@@ -2214,12 +2237,12 @@ mod tests {
                     assert!(properties.is_some());
                     let props = properties.unwrap();
 
-                    assert_eq!(props.get("org_id"), Some(&"2".to_string()));
-                    assert_eq!(props.get("to_delete"), Some(&"false".to_string()));
-                    assert_eq!(props.get("entity_info_status"), Some(&"1".to_string()));
+                    assert_eq!(props.get("org_id"), Some(&Value::Number(serde_json::Number::from(2))));
+                    assert_eq!(props.get("to_delete"), Some(&Value::Bool(false)));
+                    assert_eq!(props.get("entity_info_status"), Some(&Value::Number(serde_json::Number::from(1))));
                     assert_eq!(
                         props.get("is_publicly_accessible"),
-                        Some(&"true".to_string())
+                        Some(&Value::Bool(true))
                     );
                     assert_eq!(props.len(), 4);
                 }
@@ -2242,8 +2265,8 @@ mod tests {
                     assert!(properties.is_some());
                     let props = properties.unwrap();
 
-                    assert_eq!(props.get("since"), Some(&"2020".to_string()));
-                    assert_eq!(props.get("strength"), Some(&"strong".to_string()));
+                    assert_eq!(props.get("since"), Some(&Value::Number(serde_json::Number::from(2020))));
+                    assert_eq!(props.get("strength"), Some(&Value::String("strong".to_string())));
                     assert_eq!(props.len(), 2);
                 }
             }
@@ -2332,7 +2355,7 @@ mod tests {
                             assert_eq!(edge.target, "w");
                         }
                         Err(e) => {
-                            println!("Failed to create graph: {}", e);
+                            println!("Failed to create graph: {e}");
                         }
                     }
                 }
@@ -2362,7 +2385,7 @@ mod tests {
                             assert_eq!(edge.target, "w");
                         }
                         Err(e) => {
-                            println!("Failed to create graph: {}", e);
+                            println!("Failed to create graph: {e}");
                         }
                     }
                 }
@@ -2392,7 +2415,7 @@ mod tests {
                             assert_eq!(edge.target, "w");
                         }
                         Err(e) => {
-                            println!("Failed to create graph: {}", e);
+                            println!("Failed to create graph: {e}");
                         }
                     }
                 }
@@ -2438,7 +2461,7 @@ mod tests {
                             );
                         }
                         Err(e) => {
-                            println!("Failed to create graph: {}", e);
+                            println!("Failed to create graph: {e}");
                         }
                     }
                 }

@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 libcypher-parser-sys = "0.6.0"
+serde_json = "1.0.145"
