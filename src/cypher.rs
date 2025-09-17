@@ -132,6 +132,8 @@ pub struct PatternVertex {
 /// Represents an edge (relationship pattern) in the pattern graph
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternEdge {
+    /// Edge identifier (can be empty if not specified)
+    pub identifier: String,
     /// Source vertex identifier
     pub source: String,
     /// Target vertex identifier
@@ -195,6 +197,7 @@ pub fn make_match_graph(
     let mut vertices = Vec::new();
     let mut edges = Vec::new();
     let mut node_counter = 0;
+    let mut rel_counter = 0;
 
     // Get the pattern from the MATCH clause
     // MATCH clause typically has the pattern as its first child
@@ -209,7 +212,7 @@ pub fn make_match_graph(
     }
 
     // Process the pattern
-    process_pattern(pattern, &mut vertices, &mut edges, &mut node_counter)?;
+    process_pattern(pattern, &mut vertices, &mut edges, &mut node_counter, &mut rel_counter)?;
 
     Ok((vertices, edges))
 }
@@ -220,6 +223,7 @@ fn process_pattern(
     vertices: &mut Vec<PatternVertex>,
     edges: &mut Vec<PatternEdge>,
     node_counter: &mut u32,
+    rel_counter: &mut usize,
 ) -> Result<(), GraphError> {
     if pattern.is_null() {
         return Err(GraphError::InvalidAstNode);
@@ -235,20 +239,20 @@ fn process_pattern(
         let n_children = unsafe { cypher_astnode_nchildren(pattern) };
         for i in 0..n_children {
             let child = unsafe { cypher_astnode_get_child(pattern, i) };
-            process_pattern(child, vertices, edges, node_counter)?;
+            process_pattern(child, vertices, edges, node_counter, rel_counter)?;
         }
     } else if pattern_type == cypher_named_path {
         // Named path - get the actual path from the second child
         let n_children = unsafe { cypher_astnode_nchildren(pattern) };
         if n_children >= 2 {
             let path = unsafe { cypher_astnode_get_child(pattern, 1) };
-            process_pattern_path(path, vertices, edges, node_counter)?;
+            process_pattern_path(path, vertices, edges, node_counter, rel_counter)?;
         }
     } else if pattern_type == cypher_pattern_path {
-        process_pattern_path(pattern, vertices, edges, node_counter)?;
+        process_pattern_path(pattern, vertices, edges, node_counter, rel_counter)?;
     } else {
         // Try to process as pattern path anyway
-        process_pattern_path(pattern, vertices, edges, node_counter)?;
+        process_pattern_path(pattern, vertices, edges, node_counter, rel_counter)?;
     }
 
     Ok(())
@@ -260,6 +264,7 @@ fn process_pattern_path(
     vertices: &mut Vec<PatternVertex>,
     edges: &mut Vec<PatternEdge>,
     node_counter: &mut u32,
+    rel_counter: &mut usize,
 ) -> Result<(), GraphError> {
     if path.is_null() {
         return Err(GraphError::InvalidAstNode);
@@ -295,7 +300,7 @@ fn process_pattern_path(
 
                         // Process the relationship
                         let edge =
-                            process_relationship_pattern(child, source_id.clone(), target_id)?;
+                            process_relationship_pattern(child, source_id.clone(), target_id, rel_counter)?;
                         edges.push(edge);
 
                         current_node_id = Some(target_vertex.identifier.clone());
@@ -378,11 +383,13 @@ fn process_relationship_pattern(
     rel: *const cypher_astnode_t,
     source: String,
     target: String,
+    rel_counter: &mut usize,
 ) -> Result<PatternEdge, GraphError> {
     if rel.is_null() {
         return Err(GraphError::InvalidAstNode);
     }
 
+    let mut identifier = String::new();
     let mut rel_type: Option<String> = None;
     let mut properties = HashMap::new();
 
@@ -392,6 +399,7 @@ fn process_relationship_pattern(
     }
 
     let n_children = unsafe { cypher_astnode_nchildren(rel) };
+    let cypher_identifier = unsafe { CYPHER_AST_IDENTIFIER };
     let cypher_reltype = unsafe { CYPHER_AST_RELTYPE };
     let cypher_map = unsafe { CYPHER_AST_MAP };
 
@@ -403,7 +411,11 @@ fn process_relationship_pattern(
 
         let child_type = unsafe { cypher_astnode_type(child) };
 
-        if child_type == cypher_reltype {
+        if child_type == cypher_identifier {
+            if let Some(id) = extract_identifier(child) {
+                identifier = id;
+            }
+        } else if child_type == cypher_reltype {
             if let Some(rt) = extract_reltype(child) {
                 rel_type = Some(rt);
             }
@@ -412,10 +424,17 @@ fn process_relationship_pattern(
         }
     }
 
+    // Generate identifier if empty
+    if identifier.is_empty() {
+        identifier = format!("r_{rel_counter}");
+        *rel_counter += 1;
+    }
+
     // Try to determine direction from relationship pattern structure
     let direction = determine_relationship_direction(rel);
 
     Ok(PatternEdge {
+        identifier,
         source,
         target,
         rel_type,
@@ -753,7 +772,7 @@ pub fn find_match_return_pattern(
     find_match_with_return(root)
 }
 
-/// Recursively searches for a MATCH clause followed by a RETURN clause
+/// Searches for a query with exactly two clauses: MATCH followed by RETURN
 pub fn find_match_with_return(node: *const cypher_astnode_t) -> Option<*const cypher_astnode_t> {
     if node.is_null() {
         return None;
@@ -768,36 +787,36 @@ pub fn find_match_with_return(node: *const cypher_astnode_t) -> Option<*const cy
     let cypher_return = unsafe { CYPHER_AST_RETURN };
 
     if node_type == cypher_query {
-        // Look for MATCH followed by RETURN in the query clauses
-        let mut found_match: Option<*const cypher_astnode_t> = None;
-        let mut found_return = false;
-
-        for i in 0..n_children {
-            let child = unsafe { cypher_astnode_get_child(node, i) };
-            if child.is_null() {
-                continue;
-            }
-
-            let child_type = unsafe { cypher_astnode_type(child) };
-
-            if child_type == cypher_match && found_match.is_none() {
-                found_match = Some(child);
-            } else if child_type == cypher_return && found_match.is_some() {
-                found_return = true;
-                break;
-            }
+        // We only accept queries with exactly 2 clauses
+        if n_children != 2 {
+            return None;
         }
 
-        if found_match.is_some() && found_return {
-            return found_match;
+        // Check that first clause is MATCH
+        let first_child = unsafe { cypher_astnode_get_child(node, 0) };
+        if first_child.is_null() {
+            return None;
         }
-    } else if node_type == cypher_match {
-        // Check if there's a RETURN clause as a sibling
-        // This is a simplified check - in practice, we'd need to validate the full structure
-        return Some(node);
+        let first_child_type = unsafe { cypher_astnode_type(first_child) };
+        if first_child_type != cypher_match {
+            return None;
+        }
+
+        // Check that second clause is RETURN
+        let second_child = unsafe { cypher_astnode_get_child(node, 1) };
+        if second_child.is_null() {
+            return None;
+        }
+        let second_child_type = unsafe { cypher_astnode_type(second_child) };
+        if second_child_type != cypher_return {
+            return None;
+        }
+
+        // Both conditions met - return the MATCH clause
+        return Some(first_child);
     }
 
-    // Recursively search children
+    // Recursively search children for query nodes
     for i in 0..n_children {
         let child = unsafe { cypher_astnode_get_child(node, i) };
         if let Some(match_node) = find_match_with_return(child) {
@@ -852,25 +871,25 @@ pub fn print_pattern_graph(vertices: &[PatternVertex], edges: &[PatternEdge]) {
             let edge_info = if let Some(ref rel_type) = edge.rel_type {
                 match edge.direction {
                     RelationshipDirection::Outbound => {
-                        format!("Edge: {} -[{}]-> {}", edge.source, rel_type, edge.target)
+                        format!("Edge: {} -[{}:{}]-> {}", edge.source, edge.identifier, rel_type, edge.target)
                     }
                     RelationshipDirection::Inbound => {
-                        format!("Edge: {} <-[{}]- {}", edge.source, rel_type, edge.target)
+                        format!("Edge: {} <-[{}:{}]- {}", edge.source, edge.identifier, rel_type, edge.target)
                     }
                     RelationshipDirection::Bidirectional => {
-                        format!("Edge: {} -[{}]- {}", edge.source, rel_type, edge.target)
+                        format!("Edge: {} -[{}:{}]- {}", edge.source, edge.identifier, rel_type, edge.target)
                     }
                 }
             } else {
                 match edge.direction {
                     RelationshipDirection::Outbound => {
-                        format!("Edge: {} --> {}", edge.source, edge.target)
+                        format!("Edge: {} -[{}]-> {}", edge.source, edge.identifier, edge.target)
                     }
                     RelationshipDirection::Inbound => {
-                        format!("Edge: {} <-- {}", edge.source, edge.target)
+                        format!("Edge: {} <-[{}]- {}", edge.source, edge.identifier, edge.target)
                     }
                     RelationshipDirection::Bidirectional => {
-                        format!("Edge: {} --- {}", edge.source, edge.target)
+                        format!("Edge: {} -[{}]- {}", edge.source, edge.identifier, edge.target)
                     }
                 }
             };
@@ -1304,6 +1323,7 @@ mod tests {
     #[test]
     fn test_pattern_edge_creation() {
         let edge = PatternEdge {
+            identifier: "r".to_string(),
             source: "a".to_string(),
             target: "b".to_string(),
             rel_type: Some("KNOWS".to_string()),
@@ -1311,6 +1331,7 @@ mod tests {
             direction: RelationshipDirection::Outbound,
         };
 
+        assert_eq!(edge.identifier, "r");
         assert_eq!(edge.source, "a");
         assert_eq!(edge.target, "b");
         assert_eq!(edge.rel_type, Some("KNOWS".to_string()));
@@ -1838,6 +1859,7 @@ mod tests {
         ];
         let edges = vec![
             PatternEdge {
+                identifier: "r_1".to_string(),
                 source: "center".to_string(),
                 target: "leaf1".to_string(),
                 rel_type: None,
@@ -1845,6 +1867,7 @@ mod tests {
                 direction: RelationshipDirection::Outbound,
             },
             PatternEdge {
+                identifier: "r_2".to_string(),
                 source: "center".to_string(),
                 target: "leaf2".to_string(),
                 rel_type: None,
@@ -1852,6 +1875,7 @@ mod tests {
                 direction: RelationshipDirection::Outbound,
             },
             PatternEdge {
+                identifier: "r_3".to_string(),
                 source: "center".to_string(),
                 target: "leaf3".to_string(),
                 rel_type: None,
