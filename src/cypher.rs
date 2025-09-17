@@ -798,30 +798,27 @@ pub fn find_match_with_return(node: *const cypher_astnode_t) -> Option<*const cy
     None
 }
 
-/// Prints the pattern graph in tabular format
+/// Prints the pattern graph in list format
 pub fn print_pattern_graph(vertices: &[PatternVertex], edges: &[PatternEdge]) {
     println!("\n=== Pattern Graph ===");
 
-    // Print vertices table
+    // Print vertices list
     println!("\n--- Vertices ---");
     if vertices.is_empty() {
         println!("No vertices found.");
     } else {
-        println!("┌─────────────────┬─────────────────┬─────────────────┐");
-        println!("│ Identifier      │ Label           │ Properties      │");
-        println!("├─────────────────┼─────────────────┼─────────────────┤");
-
         for vertex in vertices {
-            let identifier = format!("{:<15}", truncate_string(&vertex.identifier, 15));
-            let label = format!(
-                "{:<15}",
-                vertex
-                    .label
-                    .as_ref()
-                    .map_or("(none)".to_string(), |l| truncate_string(l, 15))
-            );
-            let properties = if vertex.properties.is_empty() {
-                "(none)".to_string()
+            // Print identifier and label on first line
+            let vertex_info = if let Some(ref label) = vertex.label {
+                format!("Vertex: {} ({})", vertex.identifier, label)
+            } else {
+                format!("Vertex: {}", vertex.identifier)
+            };
+            println!("{vertex_info}");
+            
+            // Print properties on second line
+            if vertex.properties.is_empty() {
+                println!("  Properties: (none)");
             } else {
                 let prop_str = vertex
                     .properties
@@ -829,49 +826,35 @@ pub fn print_pattern_graph(vertices: &[PatternVertex], edges: &[PatternEdge]) {
                     .map(|(k, v)| format!("{k}:{v}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                truncate_string(&prop_str, 15)
-            };
-            let properties = format!("{properties:<15}");
-
-            println!("│ {identifier} │ {label} │ {properties} │");
+                println!("  Properties: {{{prop_str}}}");
+            }
+            println!(); // Empty line between vertices
         }
-        println!("└─────────────────┴─────────────────┴─────────────────┘");
     }
 
-    // Print edges table
-    println!("\n--- Edges ---");
+    // Print edges list
+    println!("--- Edges ---");
     if edges.is_empty() {
         println!("No edges found.");
     } else {
-        println!(
-            "┌─────────────────┬─────────────────┬─────────────────┬─────────────────┬─────────────────┐"
-        );
-        println!(
-            "│ Source          │ Target          │ Type            │ Direction       │ Properties      │"
-        );
-        println!(
-            "├─────────────────┼─────────────────┼─────────────────┼─────────────────┼─────────────────┤"
-        );
-
         for edge in edges {
-            let source = format!("{:<15}", truncate_string(&edge.source, 15));
-            let target = format!("{:<15}", truncate_string(&edge.target, 15));
-            let edge_type = format!(
-                "{:<15}",
-                edge.rel_type
-                    .as_ref()
-                    .map_or("(none)".to_string(), |t| truncate_string(t, 15))
-            );
-            let direction = format!(
-                "{:<15}",
-                match edge.direction {
-                    RelationshipDirection::Outbound => "->",
-                    RelationshipDirection::Inbound => "<-",
-                    RelationshipDirection::Bidirectional => "<->",
-                }
-            );
-            let properties = if edge.properties.is_empty() {
-                "(none)".to_string()
+            // Print edge information on first line
+            let direction_arrow = match edge.direction {
+                RelationshipDirection::Outbound => "->",
+                RelationshipDirection::Inbound => "<-",
+                RelationshipDirection::Bidirectional => "<->",
+            };
+            
+            let edge_info = if let Some(ref rel_type) = edge.rel_type {
+                format!("Edge: {} -[{}]{} {}", edge.source, rel_type, direction_arrow, edge.target)
+            } else {
+                format!("Edge: {} -{} {}", edge.source, direction_arrow, edge.target)
+            };
+            println!("{edge_info}");
+            
+            // Print properties on second line
+            if edge.properties.is_empty() {
+                println!("  Properties: (none)");
             } else {
                 let prop_str = edge
                     .properties
@@ -879,26 +862,13 @@ pub fn print_pattern_graph(vertices: &[PatternVertex], edges: &[PatternEdge]) {
                     .map(|(k, v)| format!("{k}:{v}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                truncate_string(&prop_str, 15)
-            };
-            let properties = format!("{properties:<15}");
-
-            println!("│ {source} │ {target} │ {edge_type} │ {direction} │ {properties} │");
+                println!("  Properties: {{{prop_str}}}");
+            }
+            println!(); // Empty line between edges
         }
-        println!(
-            "└─────────────────┴─────────────────┴─────────────────┴─────────────────┴─────────────────┘"
-        );
     }
 }
 
-/// Helper function to truncate strings for table display
-pub fn truncate_string(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
-}
 
 #[cfg(test)]
 mod tests {
