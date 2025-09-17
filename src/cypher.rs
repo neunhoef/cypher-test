@@ -429,6 +429,13 @@ unsafe extern "C" {
     fn cypher_ast_identifier_get_name(node: *const cypher_astnode_t) -> *const c_char;
     fn cypher_ast_label_get_name(node: *const cypher_astnode_t) -> *const c_char;
     fn cypher_ast_reltype_get_name(node: *const cypher_astnode_t) -> *const c_char;
+    fn cypher_ast_map_nentries(node: *const cypher_astnode_t) -> u32;
+    fn cypher_ast_map_get_key(node: *const cypher_astnode_t, index: u32) -> *const cypher_astnode_t;
+    fn cypher_ast_map_get_value(node: *const cypher_astnode_t, index: u32) -> *const cypher_astnode_t;
+    fn cypher_ast_prop_name_get_value(node: *const cypher_astnode_t) -> *const c_char;
+    fn cypher_ast_string_get_value(node: *const cypher_astnode_t) -> *const c_char;
+    fn cypher_ast_integer_get_valuestr(node: *const cypher_astnode_t) -> *const c_char;
+    fn cypher_ast_float_get_valuestr(node: *const cypher_astnode_t) -> *const c_char;
 }
 
 /// Extracts label text from a label AST node  
@@ -489,9 +496,142 @@ fn extract_properties(node: *const cypher_astnode_t) -> Option<HashMap<String, S
         return None;
     }
     
-    // For now, return empty map - this would need proper implementation
-    // to traverse the map structure and extract key-value pairs
-    Some(HashMap::new())
+    // Verify this is actually a map node
+    let node_type = unsafe { cypher_astnode_type(node) };
+    let cypher_map = unsafe { CYPHER_AST_MAP };
+    
+    if node_type != cypher_map {
+        return None;
+    }
+    
+    let mut properties = HashMap::new();
+    
+    // Get the number of entries in the map
+    let n_entries = unsafe { cypher_ast_map_nentries(node) };
+    
+    for i in 0..n_entries {
+        // Get the key and value for this entry
+        let key_node = unsafe { cypher_ast_map_get_key(node, i) };
+        let value_node = unsafe { cypher_ast_map_get_value(node, i) };
+        
+        if key_node.is_null() || value_node.is_null() {
+            continue;
+        }
+        
+        // Extract the key string from the property name node
+        if let Some(key_str) = extract_property_name(key_node) {
+            // Extract the value string from the expression node
+            if let Some(value_str) = extract_expression_value(value_node) {
+                properties.insert(key_str, value_str);
+            }
+        }
+    }
+    
+    Some(properties)
+}
+
+/// Extracts a property name from a CYPHER_AST_PROP_NAME node
+fn extract_property_name(node: *const cypher_astnode_t) -> Option<String> {
+    if node.is_null() {
+        return None;
+    }
+    
+    let node_type = unsafe { cypher_astnode_type(node) };
+    let cypher_prop_name = unsafe { CYPHER_AST_PROP_NAME };
+    
+    if node_type != cypher_prop_name {
+        return None;
+    }
+    
+    unsafe {
+        let name_ptr = cypher_ast_prop_name_get_value(node);
+        if !name_ptr.is_null() {
+            let c_str = CStr::from_ptr(name_ptr);
+            return Some(c_str.to_string_lossy().to_string());
+        }
+    }
+    
+    None
+}
+
+/// Extracts a string value from various expression node types
+fn extract_expression_value(node: *const cypher_astnode_t) -> Option<String> {
+    if node.is_null() {
+        return None;
+    }
+    
+    let node_type = unsafe { cypher_astnode_type(node) };
+    
+    unsafe {
+        let cypher_string = CYPHER_AST_STRING;
+        let cypher_integer = CYPHER_AST_INTEGER;
+        let cypher_float = CYPHER_AST_FLOAT;
+        let cypher_boolean = CYPHER_AST_BOOLEAN;
+        let cypher_true = CYPHER_AST_TRUE;
+        let cypher_false = CYPHER_AST_FALSE;
+        let cypher_null = CYPHER_AST_NULL;
+        
+        match node_type {
+            x if x == cypher_string => {
+                let str_ptr = cypher_ast_string_get_value(node);
+                if !str_ptr.is_null() {
+                    let c_str = CStr::from_ptr(str_ptr);
+                    return Some(c_str.to_string_lossy().to_string());
+                }
+            }
+            x if x == cypher_integer => {
+                let int_ptr = cypher_ast_integer_get_valuestr(node);
+                if !int_ptr.is_null() {
+                    let c_str = CStr::from_ptr(int_ptr);
+                    return Some(c_str.to_string_lossy().to_string());
+                }
+            }
+            x if x == cypher_float => {
+                let float_ptr = cypher_ast_float_get_valuestr(node);
+                if !float_ptr.is_null() {
+                    let c_str = CStr::from_ptr(float_ptr);
+                    return Some(c_str.to_string_lossy().to_string());
+                }
+            }
+            x if x == cypher_boolean => {
+                // For boolean nodes, check if it's true or false
+                let n_children = cypher_astnode_nchildren(node);
+                if n_children > 0 {
+                    let child = cypher_astnode_get_child(node, 0);
+                    if !child.is_null() {
+                        let child_type = cypher_astnode_type(child);
+                        if child_type == cypher_true {
+                            return Some("true".to_string());
+                        } else if child_type == cypher_false {
+                            return Some("false".to_string());
+                        }
+                    }
+                }
+            }
+            x if x == cypher_true => {
+                return Some("true".to_string());
+            }
+            x if x == cypher_false => {
+                return Some("false".to_string());
+            }
+            x if x == cypher_null => {
+                return Some("null".to_string());
+            }
+            _ => {
+                // For other expression types, return a generic representation
+                let type_str_ptr = cypher_astnode_typestr(node_type);
+                if !type_str_ptr.is_null() {
+                    let type_str = CStr::from_ptr(type_str_ptr.cast::<c_char>())
+                        .to_string_lossy()
+                        .to_string();
+                    return Some(format!("<{}>", type_str));
+                }
+                return Some("<unknown>".to_string());
+            }
+        }
+    }
+    
+    None
 }
 
 /// Checks if a relationship pattern has variable length
@@ -1714,5 +1854,324 @@ mod tests {
         }];
         let edges = vec![];
         print_pattern_graph(&vertices, &edges);
+    }
+
+    // TESTS FOR EXTRACT_PROPERTIES FUNCTION
+
+    #[test]
+    fn test_extract_properties_null_input() {
+        let result = extract_properties(ptr::null());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_properties_non_map_node() {
+        // Test with a non-map AST node (should return None)
+        let query = "MATCH (n) RETURN n";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                let n_roots = unsafe { cypher_parse_result_nroots(result) };
+                if n_roots > 0 {
+                    let root = unsafe { cypher_parse_result_get_root(result, 0) };
+                    if !root.is_null() {
+                        // Root node is not a map, should return None
+                        let properties = extract_properties(root);
+                        assert_eq!(properties, None);
+                    }
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_extract_properties_empty_map() {
+        let query = "MATCH (n {}) RETURN n";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(map_node) = find_map_node_in_query(result) {
+                    let properties = extract_properties(map_node);
+                    assert!(properties.is_some());
+                    let props = properties.unwrap();
+                    assert!(props.is_empty());
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test] 
+    fn test_extract_properties_string_values() {
+        let query = "MATCH (n {name: 'Alice', city: 'Wonderland'}) RETURN n";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(map_node) = find_map_node_in_query(result) {
+                    let properties = extract_properties(map_node);
+                    assert!(properties.is_some());
+                    let props = properties.unwrap();
+                    
+                    assert_eq!(props.get("name"), Some(&"Alice".to_string()));
+                    assert_eq!(props.get("city"), Some(&"Wonderland".to_string()));
+                    assert_eq!(props.len(), 2);
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_extract_properties_integer_values() {
+        let query = "MATCH (n {age: 30, count: 42}) RETURN n";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(map_node) = find_map_node_in_query(result) {
+                    let properties = extract_properties(map_node);
+                    assert!(properties.is_some());
+                    let props = properties.unwrap();
+                    
+                    assert_eq!(props.get("age"), Some(&"30".to_string()));
+                    assert_eq!(props.get("count"), Some(&"42".to_string()));
+                    assert_eq!(props.len(), 2);
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_extract_properties_boolean_values() {
+        let query = "MATCH (n {active: true, deleted: false}) RETURN n";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(map_node) = find_map_node_in_query(result) {
+                    let properties = extract_properties(map_node);
+                    assert!(properties.is_some());
+                    let props = properties.unwrap();
+                    
+                    assert_eq!(props.get("active"), Some(&"true".to_string()));
+                    assert_eq!(props.get("deleted"), Some(&"false".to_string()));
+                    assert_eq!(props.len(), 2);
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_extract_properties_float_values() {
+        let query = "MATCH (n {height: 5.9, weight: 70.5}) RETURN n";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(map_node) = find_map_node_in_query(result) {
+                    let properties = extract_properties(map_node);
+                    assert!(properties.is_some());
+                    let props = properties.unwrap();
+                    
+                    assert_eq!(props.get("height"), Some(&"5.9".to_string()));
+                    assert_eq!(props.get("weight"), Some(&"70.5".to_string()));
+                    assert_eq!(props.len(), 2);
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_extract_properties_mixed_types() {
+        let query = "MATCH (n {name: 'Alice', age: 30, active: true, score: 95.5}) RETURN n";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(map_node) = find_map_node_in_query(result) {
+                    let properties = extract_properties(map_node);
+                    assert!(properties.is_some());
+                    let props = properties.unwrap();
+                    
+                    assert_eq!(props.get("name"), Some(&"Alice".to_string()));
+                    assert_eq!(props.get("age"), Some(&"30".to_string()));
+                    assert_eq!(props.get("active"), Some(&"true".to_string()));
+                    assert_eq!(props.get("score"), Some(&"95.5".to_string()));
+                    assert_eq!(props.len(), 4);
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_extract_properties_null_values() {
+        let query = "MATCH (n {optional: null}) RETURN n";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(map_node) = find_map_node_in_query(result) {
+                    let properties = extract_properties(map_node);
+                    assert!(properties.is_some());
+                    let props = properties.unwrap();
+                    
+                    assert_eq!(props.get("optional"), Some(&"null".to_string()));
+                    assert_eq!(props.len(), 1);
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_extract_properties_real_world_s3_bucket() {
+        let query = "MATCH (n:aws_s3_bucket {org_id: 2, to_delete: false, default_encryption_type: 'aws:kms'}) RETURN n";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(map_node) = find_map_node_in_query(result) {
+                    let properties = extract_properties(map_node);
+                    assert!(properties.is_some());
+                    let props = properties.unwrap();
+                    
+                    assert_eq!(props.get("org_id"), Some(&"2".to_string()));
+                    assert_eq!(props.get("to_delete"), Some(&"false".to_string()));
+                    assert_eq!(props.get("default_encryption_type"), Some(&"aws:kms".to_string()));
+                    assert_eq!(props.len(), 3);
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_extract_properties_real_world_complex() {
+        let query = "MATCH (n:aws_ec2_instance {org_id: 2, to_delete: false, entity_info_status:1, is_publicly_accessible: true}) RETURN n";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(map_node) = find_map_node_in_query(result) {
+                    let properties = extract_properties(map_node);
+                    assert!(properties.is_some());
+                    let props = properties.unwrap();
+                    
+                    assert_eq!(props.get("org_id"), Some(&"2".to_string()));
+                    assert_eq!(props.get("to_delete"), Some(&"false".to_string()));
+                    assert_eq!(props.get("entity_info_status"), Some(&"1".to_string()));
+                    assert_eq!(props.get("is_publicly_accessible"), Some(&"true".to_string()));
+                    assert_eq!(props.len(), 4);
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_extract_properties_relationship_properties() {
+        let query = "MATCH (a)-[r:KNOWS {since: 2020, strength: 'strong'}]->(b) RETURN a, r, b";
+        let result = parse_cypher_query(query);
+        
+        if !result.is_null() {
+            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+            if n_errors == 0 {
+                if let Some(map_node) = find_map_node_in_query(result) {
+                    let properties = extract_properties(map_node);
+                    assert!(properties.is_some());
+                    let props = properties.unwrap();
+                    
+                    assert_eq!(props.get("since"), Some(&"2020".to_string()));
+                    assert_eq!(props.get("strength"), Some(&"strong".to_string()));
+                    assert_eq!(props.len(), 2);
+                }
+            }
+        }
+        
+        cleanup_parse_result(result);
+    }
+
+    #[test]
+    fn test_extract_property_name_helper() {
+        // Test the helper function directly with null input
+        let result = extract_property_name(ptr::null());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_expression_value_helper() {
+        // Test the helper function directly with null input
+        let result = extract_expression_value(ptr::null());
+        assert_eq!(result, None);
+    }
+
+    // Helper function to find a map node in a parsed query
+    fn find_map_node_in_query(result: *const cypher_parse_result_t) -> Option<*const cypher_astnode_t> {
+        if result.is_null() {
+            return None;
+        }
+
+        let n_roots = unsafe { cypher_parse_result_nroots(result) };
+        for i in 0..n_roots {
+            let root = unsafe { cypher_parse_result_get_root(result, i) };
+            if let Some(map_node) = find_map_node_recursive(root) {
+                return Some(map_node);
+            }
+        }
+        
+        None
+    }
+
+    // Recursively search for a map node in the AST
+    fn find_map_node_recursive(node: *const cypher_astnode_t) -> Option<*const cypher_astnode_t> {
+        if node.is_null() {
+            return None;
+        }
+
+        let node_type = unsafe { cypher_astnode_type(node) };
+        let cypher_map = unsafe { CYPHER_AST_MAP };
+        
+        if node_type == cypher_map {
+            return Some(node);
+        }
+
+        // Recursively search children
+        let n_children = unsafe { cypher_astnode_nchildren(node) };
+        for i in 0..n_children {
+            let child = unsafe { cypher_astnode_get_child(node, i) };
+            if let Some(map_node) = find_map_node_recursive(child) {
+                return Some(map_node);
+            }
+        }
+
+        None
     }
 }
