@@ -144,6 +144,10 @@ pub struct PatternEdge {
     pub properties: HashMap<String, Value>,
     /// Direction of the relationship
     pub direction: RelationshipDirection,
+    /// Minimum depth for variable length relationships (Some(1) for regular relationships)
+    pub min_depth: Option<u32>,
+    /// Maximum depth for variable length relationships (Some(1) for regular relationships)
+    pub max_depth: Option<u32>,
 }
 
 /// Direction of a relationship
@@ -393,10 +397,8 @@ fn process_relationship_pattern(
     let mut rel_type: Option<String> = None;
     let mut properties = HashMap::new();
 
-    // Check for variable length relationships - this should cause an error
-    if has_variable_length(rel) {
-        return Err(GraphError::VariableLengthRelationship);
-    }
+    // Extract depth information for variable length relationships
+    let (min_depth, max_depth) = extract_variable_length_depths(rel);
 
     let n_children = unsafe { cypher_astnode_nchildren(rel) };
     let cypher_identifier = unsafe { CYPHER_AST_IDENTIFIER };
@@ -440,6 +442,8 @@ fn process_relationship_pattern(
         rel_type,
         properties,
         direction,
+        min_depth,
+        max_depth,
     })
 }
 
@@ -694,10 +698,11 @@ fn extract_expression_value(node: *const cypher_astnode_t) -> Option<Value> {
     None
 }
 
-/// Checks if a relationship pattern has variable length
-fn has_variable_length(rel: *const cypher_astnode_t) -> bool {
+/// Extracts depth information from variable length relationships
+/// Returns (min_depth, max_depth) where None means unbounded
+fn extract_variable_length_depths(rel: *const cypher_astnode_t) -> (Option<u32>, Option<u32>) {
     if rel.is_null() {
-        return false;
+        return (Some(1), Some(1)); // Default for regular relationships
     }
 
     let n_children = unsafe { cypher_astnode_nchildren(rel) };
@@ -713,11 +718,84 @@ fn has_variable_length(rel: *const cypher_astnode_t) -> bool {
 
         // Look for range nodes that indicate variable length
         if child_type == cypher_range {
-            return true;
+            return extract_range_values(child);
         }
     }
 
-    false
+    // No range found - regular relationship has depth 1
+    (Some(1), Some(1))
+}
+
+/// Extracts min and max values from a CYPHER_AST_RANGE node
+fn extract_range_values(range_node: *const cypher_astnode_t) -> (Option<u32>, Option<u32>) {
+    if range_node.is_null() {
+        return (None, None);
+    }
+
+    let n_children = unsafe { cypher_astnode_nchildren(range_node) };
+    
+    // A range node typically has 0, 1, or 2 children representing start and end
+    let mut min_depth: Option<u32> = None;
+    let mut max_depth: Option<u32> = None;
+    
+    match n_children {
+        0 => {
+            // No bounds specified - equivalent to [*] which means [1..]
+            min_depth = Some(1);
+            max_depth = None; // unbounded
+        }
+        1 => {
+            // Single value - could be [*n] (meaning [0..n]) or [n..] (meaning [n..])
+            let child = unsafe { cypher_astnode_get_child(range_node, 0) };
+            if let Some(value) = extract_integer_from_node(child) {
+                // Check if this is a start or end bound by examining the range structure
+                // For now, assume single value means [0..value] (Neo4j default behavior)
+                min_depth = Some(0);
+                max_depth = Some(value);
+            }
+        }
+        2 => {
+            // Two values - [start..end]
+            let start_child = unsafe { cypher_astnode_get_child(range_node, 0) };
+            let end_child = unsafe { cypher_astnode_get_child(range_node, 1) };
+            
+            min_depth = extract_integer_from_node(start_child);
+            max_depth = extract_integer_from_node(end_child);
+        }
+        _ => {
+            // Unexpected number of children
+            min_depth = Some(1);
+            max_depth = None;
+        }
+    }
+    
+    (min_depth, max_depth)
+}
+
+/// Extracts integer value from an AST node (returns None for null nodes or non-integers)
+fn extract_integer_from_node(node: *const cypher_astnode_t) -> Option<u32> {
+    if node.is_null() {
+        return None;
+    }
+
+    let node_type = unsafe { cypher_astnode_type(node) };
+    let cypher_integer = unsafe { CYPHER_AST_INTEGER };
+
+    if node_type == cypher_integer {
+        unsafe {
+            let int_ptr = cypher_ast_integer_get_valuestr(node);
+            if !int_ptr.is_null() {
+                let c_str = CStr::from_ptr(int_ptr);
+                if let Ok(int_str) = c_str.to_str() {
+                    if let Ok(value) = int_str.parse::<u32>() {
+                        return Some(value);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Determines the direction of a relationship from its AST representation
@@ -867,35 +945,54 @@ pub fn print_pattern_graph(vertices: &[PatternVertex], edges: &[PatternEdge]) {
         println!("No edges found.");
     } else {
         for edge in edges {
+            // Build depth information string
+            let depth_info = match (edge.min_depth, edge.max_depth) {
+                (Some(min), Some(max)) if min == max => format!("{{{min}}}"),
+                (Some(min), Some(max)) => format!("{{{min}..{max}}}"),
+                (Some(min), None) => format!("{{{min}..}}"),
+                (None, Some(max)) => format!("{{..{max}}}"),
+                (None, None) => "".to_string(),
+            };
+            
             // Print edge information on first line in Cypher format
             let edge_info = if let Some(ref rel_type) = edge.rel_type {
                 match edge.direction {
                     RelationshipDirection::Outbound => {
-                        format!("Edge: {} -[{}:{}]-> {}", edge.source, edge.identifier, rel_type, edge.target)
+                        format!("Edge: {} -[{}:{}{}]-> {}", edge.source, edge.identifier, rel_type, depth_info, edge.target)
                     }
                     RelationshipDirection::Inbound => {
-                        format!("Edge: {} <-[{}:{}]- {}", edge.source, edge.identifier, rel_type, edge.target)
+                        format!("Edge: {} <-[{}:{}{}]- {}", edge.source, edge.identifier, rel_type, depth_info, edge.target)
                     }
                     RelationshipDirection::Bidirectional => {
-                        format!("Edge: {} -[{}:{}]- {}", edge.source, edge.identifier, rel_type, edge.target)
+                        format!("Edge: {} -[{}:{}{}]- {}", edge.source, edge.identifier, rel_type, depth_info, edge.target)
                     }
                 }
             } else {
                 match edge.direction {
                     RelationshipDirection::Outbound => {
-                        format!("Edge: {} -[{}]-> {}", edge.source, edge.identifier, edge.target)
+                        format!("Edge: {} -[{}{}]-> {}", edge.source, edge.identifier, depth_info, edge.target)
                     }
                     RelationshipDirection::Inbound => {
-                        format!("Edge: {} <-[{}]- {}", edge.source, edge.identifier, edge.target)
+                        format!("Edge: {} <-[{}{}]- {}", edge.source, edge.identifier, depth_info, edge.target)
                     }
                     RelationshipDirection::Bidirectional => {
-                        format!("Edge: {} -[{}]- {}", edge.source, edge.identifier, edge.target)
+                        format!("Edge: {} -[{}{}]- {}", edge.source, edge.identifier, depth_info, edge.target)
                     }
                 }
             };
             println!("{edge_info}");
             
-            // Print properties on second line
+            // Print depth information on second line
+            let depth_display = match (edge.min_depth, edge.max_depth) {
+                (Some(min), Some(max)) if min == max => format!("Depth: {min}"),
+                (Some(min), Some(max)) => format!("Depth: {min}..{max}"),
+                (Some(min), None) => format!("Depth: {min}..∞"),
+                (None, Some(max)) => format!("Depth: 0..{max}"),
+                (None, None) => "Depth: unbounded".to_string(),
+            };
+            println!("  {depth_display}");
+            
+            // Print properties on third line
             if edge.properties.is_empty() {
                 println!("  Properties: (none)");
             } else {
@@ -1329,6 +1426,8 @@ mod tests {
             rel_type: Some("KNOWS".to_string()),
             properties: HashMap::new(),
             direction: RelationshipDirection::Outbound,
+            min_depth: Some(1),
+            max_depth: Some(1),
         };
 
         assert_eq!(edge.identifier, "r");
@@ -1865,6 +1964,8 @@ mod tests {
                 rel_type: None,
                 properties: HashMap::new(),
                 direction: RelationshipDirection::Outbound,
+                min_depth: Some(1),
+                max_depth: Some(1),
             },
             PatternEdge {
                 identifier: "r_2".to_string(),
@@ -1873,6 +1974,8 @@ mod tests {
                 rel_type: None,
                 properties: HashMap::new(),
                 direction: RelationshipDirection::Outbound,
+                min_depth: Some(1),
+                max_depth: Some(1),
             },
             PatternEdge {
                 identifier: "r_3".to_string(),
@@ -1881,6 +1984,8 @@ mod tests {
                 rel_type: None,
                 properties: HashMap::new(),
                 direction: RelationshipDirection::Outbound,
+                min_depth: Some(1),
+                max_depth: Some(1),
             },
         ];
 
