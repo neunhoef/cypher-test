@@ -1,5 +1,6 @@
 use crate::cypher::{PatternVertex, PatternEdge, RelationshipDirection};
 use std::collections::{HashMap, HashSet, VecDeque};
+use serde_json::Value;
 
 /// Index structure for efficient graph traversal
 /// Maps each vertex index to its neighbors in different directions
@@ -79,6 +80,129 @@ impl EdgeIndex {
             undirected,
         }
     }
+}
+
+/// Represents a line in an AQL query with indentation
+#[derive(Debug, Clone, PartialEq)]
+pub struct AQLLine {
+    pub content: String,
+    pub indent: usize,
+}
+
+/// Generate FILTER conditions from a property map
+/// Returns a string with all property conditions connected by AND
+/// 
+/// # Arguments
+/// * `properties` - Property map with key-value pairs
+/// * `variable_name` - Name of the variable to apply conditions to
+/// 
+/// # Returns
+/// * `String` with FILTER conditions, empty if no properties
+fn generate_filter_conditions(properties: &HashMap<String, Value>, variable_name: &str) -> String {
+    if properties.is_empty() {
+        return String::new();
+    }
+    
+    let conditions: Vec<String> = properties
+        .iter()
+        .map(|(key, value)| {
+            match value {
+                Value::String(s) => format!("{variable_name}.{key} == '{s}'"),
+                Value::Number(n) => format!("{variable_name}.{key} == {n}"),
+                Value::Bool(b) => format!("{variable_name}.{key} == {b}"),
+                Value::Null => format!("{variable_name}.{key} == null"),
+                _ => format!("{variable_name}.{key} == {value}"),
+            }
+        })
+        .collect();
+    
+    conditions.join(" AND ")
+}
+
+/// Derive collection name from vertex label or use default
+/// 
+/// # Arguments
+/// * `vertex` - The vertex to derive collection name for
+/// 
+/// # Returns
+/// * Collection name string
+fn derive_collection_name(vertex: &PatternVertex) -> String {
+    if let Some(label) = &vertex.label {
+        label.clone()
+    } else {
+        "vertices".to_string()
+    }
+}
+
+/// Find the vertex with the most prescribed properties
+/// In case of a tie, select the vertex with the smallest index
+/// 
+/// # Arguments
+/// * `vertices` - Vector of pattern vertices
+/// 
+/// # Returns
+/// * Index of the anchor vertex, or None if vertices is empty
+fn find_anchor_vertex(vertices: &[PatternVertex]) -> Option<usize> {
+    if vertices.is_empty() {
+        return None;
+    }
+    
+    let mut best_index = 0;
+    let mut max_properties = vertices[0].properties.len();
+    
+    for (index, vertex) in vertices.iter().enumerate().skip(1) {
+        let prop_count = vertex.properties.len();
+        if prop_count > max_properties {
+            max_properties = prop_count;
+            best_index = index;
+        }
+    }
+    
+    Some(best_index)
+}
+
+/// Generate AQL query from a pattern graph match statement
+/// Currently generates only the anchor FOR statement with FILTER conditions
+/// 
+/// # Arguments
+/// * `vertices` - Pattern vertices from the match statement
+/// * `_edge_index` - Edge index for the pattern graph (not used yet)
+/// 
+/// # Returns
+/// * `Result<Vec<AQLLine>, String>` with AQL lines or error message
+pub fn match_to_aql(vertices: &[PatternVertex], _edge_index: &EdgeIndex) -> Result<Vec<AQLLine>, String> {
+    if vertices.is_empty() {
+        return Err("No vertices in pattern graph".to_string());
+    }
+    
+    // Find the anchor vertex (most properties, smallest index for ties)
+    let anchor_index = find_anchor_vertex(vertices)
+        .ok_or("Failed to find anchor vertex".to_string())?;
+    
+    let anchor_vertex = &vertices[anchor_index];
+    let collection_name = derive_collection_name(anchor_vertex);
+    let variable_name = &anchor_vertex.identifier;
+    
+    let mut aql_lines = Vec::new();
+    
+    // Generate FOR statement
+    let for_line = AQLLine {
+        content: format!("FOR {variable_name} IN {collection_name}"),
+        indent: 0,
+    };
+    aql_lines.push(for_line);
+    
+    // Generate FILTER conditions if properties exist
+    let filter_conditions = generate_filter_conditions(&anchor_vertex.properties, variable_name);
+    if !filter_conditions.is_empty() {
+        let filter_line = AQLLine {
+            content: format!("FILTER {filter_conditions}"),
+            indent: 1,
+        };
+        aql_lines.push(filter_line);
+    }
+    
+    Ok(aql_lines)
 }
 
 /// Check if the pattern graph is connected when viewed as an undirected graph

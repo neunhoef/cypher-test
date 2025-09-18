@@ -12,7 +12,7 @@ use libcypher_parser_sys::*;
 mod cypher;
 mod cypher_to_aql;
 use cypher::{GraphError, find_match_return_pattern, make_match_graph, print_pattern_graph};
-use cypher_to_aql::{EdgeIndex, is_connected};
+use cypher_to_aql::{EdgeIndex, is_connected, match_to_aql};
 
 fn main() {
     // Get command line arguments
@@ -143,6 +143,21 @@ fn main() {
                                  AQL translation requires a connected pattern graph."
                             );
                             std::process::exit(1);
+                        }
+
+                        // Generate AQL translation
+                        match match_to_aql(&vertices, &edge_index) {
+                            Ok(aql_lines) => {
+                                println!("\n=== AQL Translation ===");
+                                for line in aql_lines {
+                                    let indent_str = "  ".repeat(line.indent);
+                                    println!("{}{}", indent_str, line.content);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("\nError generating AQL: {e}");
+                                std::process::exit(1);
+                            }
                         }
                     }
                     Err(GraphError::VariableLengthRelationship) => {
