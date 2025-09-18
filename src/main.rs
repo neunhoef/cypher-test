@@ -8,9 +8,11 @@ use std::ptr;
 #[allow(clippy::wildcard_imports)]
 use libcypher_parser_sys::*;
 
-// Include our cypher module
+// Include our modules
 mod cypher;
+mod cypher_to_aql;
 use cypher::{GraphError, find_match_return_pattern, make_match_graph, print_pattern_graph};
+use cypher_to_aql::{EdgeIndex, is_connected};
 
 fn main() {
     // Get command line arguments
@@ -125,6 +127,23 @@ fn main() {
                             edges.len()
                         );
                         print_pattern_graph(&vertices, &edges);
+
+                        // Check pattern graph connectivity
+                        let edge_index = EdgeIndex::new(&vertices, &edges);
+                        let connected = is_connected(&vertices, &edge_index);
+                        println!(
+                            "\n=== Pattern Graph Analysis ===\n\
+                             Graph connectivity: {}",
+                            if connected { "Connected" } else { "Not connected" }
+                        );
+
+                        if !connected {
+                            eprintln!(
+                                "\nError: The pattern graph is not connected. \
+                                 AQL translation requires a connected pattern graph."
+                            );
+                            std::process::exit(1);
+                        }
                     }
                     Err(GraphError::VariableLengthRelationship) => {
                         eprintln!(
