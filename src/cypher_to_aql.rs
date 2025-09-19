@@ -251,6 +251,7 @@ fn derive_edge_collection_name(edge: &PatternEdge) -> Result<String, String> {
 /// * `spanning_edge` - The spanning tree edge to generate traversal for
 /// * `vertices` - Vector of pattern vertices
 /// * `edges` - Vector of pattern edges
+/// * `indent` - Mutable reference to the current indentation level
 /// 
 /// # Returns
 /// * `Result<AQLLine, String>` - AQL traversal line or error message
@@ -258,6 +259,7 @@ pub fn generate_edge_traversal(
     spanning_edge: &SpanningTreeEdge,
     vertices: &[PatternVertex],
     edges: &[PatternEdge],
+    indent: &mut usize,
 ) -> Result<AQLLine, String> {
     let edge = &edges[spanning_edge.edge_index];
     let from_vertex = &vertices[spanning_edge.from_vertex];
@@ -295,9 +297,12 @@ pub fn generate_edge_traversal(
         )
     };
     
+    let current_indent = *indent;
+    *indent += 1; // Increase indentation for subsequent statements
+    
     Ok(AQLLine {
         content: for_statement,
-        indent: 1,
+        indent: current_indent,
     })
 }
 
@@ -305,10 +310,11 @@ pub fn generate_edge_traversal(
 /// 
 /// # Arguments
 /// * `edge` - The pattern edge with properties
+/// * `indent` - Current indentation level
 /// 
 /// # Returns
 /// * `Option<AQLLine>` - FILTER line if edge has properties, None otherwise
-pub fn generate_edge_filter(edge: &PatternEdge) -> Option<AQLLine> {
+pub fn generate_edge_filter(edge: &PatternEdge, indent: usize) -> Option<AQLLine> {
     if edge.properties.is_empty() {
         return None;
     }
@@ -320,7 +326,7 @@ pub fn generate_edge_filter(edge: &PatternEdge) -> Option<AQLLine> {
     
     Some(AQLLine {
         content: format!("FILTER {filter_conditions}"),
-        indent: 2,
+        indent,
     })
 }
 
@@ -406,20 +412,22 @@ pub fn match_to_aql(
     let variable_name = &anchor_vertex.identifier;
     
     let mut aql_lines = Vec::new();
+    let mut current_indent = 0; // Track current indentation level
     
     // Generate anchor FOR statement
     let for_line = AQLLine {
         content: format!("FOR {variable_name} IN {collection_name}"),
-        indent: 0,
+        indent: current_indent,
     };
     aql_lines.push(for_line);
+    current_indent += 1; // Increase indentation after FOR statement
     
     // Generate FILTER conditions for anchor vertex if properties exist
     let filter_conditions = generate_filter_conditions(&anchor_vertex.properties, variable_name);
     if !filter_conditions.is_empty() {
         let filter_line = AQLLine {
             content: format!("FILTER {filter_conditions}"),
-            indent: 1,
+            indent: current_indent,
         };
         aql_lines.push(filter_line);
     }
@@ -431,12 +439,12 @@ pub fn match_to_aql(
         // Generate traversal statements for each edge in the spanning tree
         for spanning_edge in &spanning_tree {
             // Generate the edge traversal FOR statement
-            let traversal_line = generate_edge_traversal(spanning_edge, vertices, edges)?;
+            let traversal_line = generate_edge_traversal(spanning_edge, vertices, edges, &mut current_indent)?;
             aql_lines.push(traversal_line);
             
             // Generate FILTER conditions for edge properties if they exist
             let edge = &edges[spanning_edge.edge_index];
-            if let Some(edge_filter) = generate_edge_filter(edge) {
+            if let Some(edge_filter) = generate_edge_filter(edge, current_indent) {
                 aql_lines.push(edge_filter);
             }
         }
@@ -695,7 +703,8 @@ mod tests {
             traversal_direction: TraversalDirection::Outbound,
         };
         
-        let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges).unwrap();
+        let mut indent = 1;
+        let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent).unwrap();
         
         assert_eq!(traversal.content, "FOR b, a-b IN 1..1 OUTBOUND a._id FRIEND");
         assert_eq!(traversal.indent, 1);
@@ -718,7 +727,8 @@ mod tests {
             traversal_direction: TraversalDirection::Inbound,
         };
         
-        let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges).unwrap();
+        let mut indent = 1;
+        let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent).unwrap();
         
         assert_eq!(traversal.content, "FOR a, a-b IN 1..1 INBOUND b._id FRIEND");
         assert_eq!(traversal.indent, 1);
@@ -741,7 +751,8 @@ mod tests {
             traversal_direction: TraversalDirection::Any,
         };
         
-        let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges).unwrap();
+        let mut indent = 1;
+        let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent).unwrap();
         
         assert_eq!(traversal.content, "FOR b, a-b IN 1..1 ANY a._id FRIEND");
         assert_eq!(traversal.indent, 1);
