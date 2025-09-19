@@ -146,7 +146,7 @@ fn main() {
                         }
 
                         // Generate AQL translation
-                        match match_to_aql(&vertices, &edge_index) {
+                        match match_to_aql(&vertices, &edges, &edge_index) {
                             Ok(aql_lines) => {
                                 println!("\n=== AQL Translation ===");
                                 for line in aql_lines {

@@ -2,6 +2,27 @@ use crate::cypher::{PatternVertex, PatternEdge, RelationshipDirection};
 use std::collections::{HashMap, HashSet, VecDeque};
 use serde_json::Value;
 
+/// Represents an edge in the spanning tree with direction information
+#[derive(Debug, Clone)]
+pub struct SpanningTreeEdge {
+    /// Index of the source vertex (already visited)
+    pub from_vertex: usize,
+    /// Index of the target vertex (newly discovered)
+    pub to_vertex: usize,
+    /// Reference to the original pattern edge
+    pub edge_index: usize,
+    /// Direction to traverse this edge (OUTBOUND, INBOUND, or ANY)
+    pub traversal_direction: TraversalDirection,
+}
+
+/// Direction for AQL graph traversal
+#[derive(Debug, Clone, PartialEq)]
+pub enum TraversalDirection {
+    Outbound,     // OUTBOUND
+    Inbound,      // INBOUND  
+    Any,          // ANY (for bidirectional edges)
+}
+
 /// Index structure for efficient graph traversal
 /// Maps each vertex index to its neighbors in different directions
 #[derive(Debug, Clone)]
@@ -82,6 +103,97 @@ impl EdgeIndex {
     }
 }
 
+/// Build a spanning tree using breadth-first search from a starting vertex
+/// Returns a list of edges in the spanning tree in the order they should be traversed
+/// 
+/// # Arguments
+/// * `vertices` - Vector of pattern vertices
+/// * `edges` - Vector of pattern edges  
+/// * `edge_index` - Precomputed edge index for efficient neighbor lookup
+/// * `start_vertex` - Index of the starting vertex for BFS
+/// 
+/// # Returns
+/// * `Result<Vec<SpanningTreeEdge>, String>` - Ordered list of spanning tree edges or error
+pub fn build_spanning_tree(
+    vertices: &[PatternVertex],
+    edges: &[PatternEdge],
+    edge_index: &EdgeIndex,
+    start_vertex: usize,
+) -> Result<Vec<SpanningTreeEdge>, String> {
+    if start_vertex >= vertices.len() {
+        return Err("Start vertex index out of bounds".to_string());
+    }
+
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut spanning_tree_edges = Vec::new();
+
+    // Create mapping from vertex identifier to index
+    let mut id_to_index: HashMap<String, usize> = HashMap::new();
+    for (index, vertex) in vertices.iter().enumerate() {
+        id_to_index.insert(vertex.identifier.clone(), index);
+    }
+
+    // Create reverse mapping from vertex pair to edge index and direction info
+    let mut edge_lookup: HashMap<(usize, usize), (usize, TraversalDirection)> = HashMap::new();
+    for (edge_idx, edge) in edges.iter().enumerate() {
+        let source_idx = match id_to_index.get(&edge.source) {
+            Some(idx) => *idx,
+            None => continue,
+        };
+        let target_idx = match id_to_index.get(&edge.target) {
+            Some(idx) => *idx,
+            None => continue,
+        };
+
+        match edge.direction {
+            RelationshipDirection::Outbound => {
+                // source -> target, so traversal is OUTBOUND from source to target
+                edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Outbound));
+                // For reverse direction (target to source), traversal is INBOUND
+                edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Inbound));
+            }
+            RelationshipDirection::Inbound => {
+                // source <- target, so traversal is INBOUND from target to source
+                edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Outbound));
+                // For reverse direction (source to target), traversal is INBOUND  
+                edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Inbound));
+            }
+            RelationshipDirection::Bidirectional => {
+                // Both directions are ANY
+                edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Any));
+                edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Any));
+            }
+        }
+    }
+
+    // Start BFS from the specified vertex
+    queue.push_back(start_vertex);
+    visited.insert(start_vertex);
+
+    while let Some(current_vertex_idx) = queue.pop_front() {
+        // Explore undirected neighbors
+        for &neighbor_idx in &edge_index.undirected[current_vertex_idx] {
+            if !visited.contains(&neighbor_idx) {
+                visited.insert(neighbor_idx);
+                queue.push_back(neighbor_idx);
+
+                // Find the edge information for this traversal
+                if let Some((edge_idx, traversal_direction)) = edge_lookup.get(&(current_vertex_idx, neighbor_idx)) {
+                    spanning_tree_edges.push(SpanningTreeEdge {
+                        from_vertex: current_vertex_idx,
+                        to_vertex: neighbor_idx,
+                        edge_index: *edge_idx,
+                        traversal_direction: traversal_direction.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(spanning_tree_edges)
+}
+
 /// Represents a line in an AQL query with indentation
 #[derive(Debug, Clone, PartialEq)]
 pub struct AQLLine {
@@ -117,6 +229,99 @@ fn generate_filter_conditions(properties: &HashMap<String, Value>, variable_name
         .collect();
     
     conditions.join(" AND ")
+}
+
+/// Derive edge collection name from relationship type or use default
+/// 
+/// # Arguments
+/// * `edge` - The pattern edge to derive collection name for
+/// 
+/// # Returns
+/// * Collection name string, or error if no rel_type specified
+fn derive_edge_collection_name(edge: &PatternEdge) -> Result<String, String> {
+    match &edge.rel_type {
+        Some(rel_type) => Ok(rel_type.clone()),
+        None => Err("Edge type is required but not specified".to_string()),
+    }
+}
+
+/// Generate AQL graph traversal statement for a spanning tree edge
+/// 
+/// # Arguments
+/// * `spanning_edge` - The spanning tree edge to generate traversal for
+/// * `vertices` - Vector of pattern vertices
+/// * `edges` - Vector of pattern edges
+/// 
+/// # Returns
+/// * `Result<AQLLine, String>` - AQL traversal line or error message
+pub fn generate_edge_traversal(
+    spanning_edge: &SpanningTreeEdge,
+    vertices: &[PatternVertex],
+    edges: &[PatternEdge],
+) -> Result<AQLLine, String> {
+    let edge = &edges[spanning_edge.edge_index];
+    let from_vertex = &vertices[spanning_edge.from_vertex];
+    let to_vertex = &vertices[spanning_edge.to_vertex];
+    
+    // Get edge collection name
+    let edge_collection = derive_edge_collection_name(edge)?;
+    
+    // Determine AQL direction keyword
+    let direction_keyword = match spanning_edge.traversal_direction {
+        TraversalDirection::Outbound => "OUTBOUND",
+        TraversalDirection::Inbound => "INBOUND", 
+        TraversalDirection::Any => "ANY",
+    };
+    
+    // Generate FOR statement
+    let for_statement = if edge.identifier.is_empty() {
+        // No edge variable needed
+        format!(
+            "FOR {} IN 1..1 {} {}._id {}",
+            to_vertex.identifier,
+            direction_keyword,
+            from_vertex.identifier,
+            edge_collection
+        )
+    } else {
+        // Include edge variable
+        format!(
+            "FOR {}, {} IN 1..1 {} {}._id {}",
+            to_vertex.identifier,
+            edge.identifier,
+            direction_keyword,
+            from_vertex.identifier,
+            edge_collection
+        )
+    };
+    
+    Ok(AQLLine {
+        content: for_statement,
+        indent: 1,
+    })
+}
+
+/// Generate FILTER conditions for edge properties
+/// 
+/// # Arguments
+/// * `edge` - The pattern edge with properties
+/// 
+/// # Returns
+/// * `Option<AQLLine>` - FILTER line if edge has properties, None otherwise
+pub fn generate_edge_filter(edge: &PatternEdge) -> Option<AQLLine> {
+    if edge.properties.is_empty() {
+        return None;
+    }
+    
+    let filter_conditions = generate_filter_conditions(&edge.properties, &edge.identifier);
+    if filter_conditions.is_empty() {
+        return None;
+    }
+    
+    Some(AQLLine {
+        content: format!("FILTER {filter_conditions}"),
+        indent: 2,
+    })
 }
 
 /// Derive collection name from vertex label or use default
@@ -162,15 +367,20 @@ fn find_anchor_vertex(vertices: &[PatternVertex]) -> Option<usize> {
 }
 
 /// Generate AQL query from a pattern graph match statement
-/// Currently generates only the anchor FOR statement with FILTER conditions
+/// Uses breadth-first search to build a spanning tree and generates one-hop traversals
 /// 
 /// # Arguments
 /// * `vertices` - Pattern vertices from the match statement
-/// * `_edge_index` - Edge index for the pattern graph (not used yet)
+/// * `edges` - Pattern edges from the match statement
+/// * `edge_index` - Edge index for the pattern graph
 /// 
 /// # Returns
 /// * `Result<Vec<AQLLine>, String>` with AQL lines or error message
-pub fn match_to_aql(vertices: &[PatternVertex], _edge_index: &EdgeIndex) -> Result<Vec<AQLLine>, String> {
+pub fn match_to_aql(
+    vertices: &[PatternVertex], 
+    edges: &[PatternEdge],
+    edge_index: &EdgeIndex
+) -> Result<Vec<AQLLine>, String> {
     if vertices.is_empty() {
         return Err("No vertices in pattern graph".to_string());
     }
@@ -185,14 +395,14 @@ pub fn match_to_aql(vertices: &[PatternVertex], _edge_index: &EdgeIndex) -> Resu
     
     let mut aql_lines = Vec::new();
     
-    // Generate FOR statement
+    // Generate anchor FOR statement
     let for_line = AQLLine {
         content: format!("FOR {variable_name} IN {collection_name}"),
         indent: 0,
     };
     aql_lines.push(for_line);
     
-    // Generate FILTER conditions if properties exist
+    // Generate FILTER conditions for anchor vertex if properties exist
     let filter_conditions = generate_filter_conditions(&anchor_vertex.properties, variable_name);
     if !filter_conditions.is_empty() {
         let filter_line = AQLLine {
@@ -200,6 +410,24 @@ pub fn match_to_aql(vertices: &[PatternVertex], _edge_index: &EdgeIndex) -> Resu
             indent: 1,
         };
         aql_lines.push(filter_line);
+    }
+    
+    // If there are edges, build spanning tree and generate edge traversals
+    if !edges.is_empty() {
+        let spanning_tree = build_spanning_tree(vertices, edges, edge_index, anchor_index)?;
+        
+        // Generate traversal statements for each edge in the spanning tree
+        for spanning_edge in &spanning_tree {
+            // Generate the edge traversal FOR statement
+            let traversal_line = generate_edge_traversal(spanning_edge, vertices, edges)?;
+            aql_lines.push(traversal_line);
+            
+            // Generate FILTER conditions for edge properties if they exist
+            let edge = &edges[spanning_edge.edge_index];
+            if let Some(edge_filter) = generate_edge_filter(edge) {
+                aql_lines.push(edge_filter);
+            }
+        }
     }
     
     Ok(aql_lines)
@@ -376,5 +604,172 @@ mod tests {
         ];
         let index = EdgeIndex::new(&vertices, &edges);
         assert!(!is_connected(&vertices, &index));
+    }
+
+    fn create_test_edge_with_type(
+        source: &str, 
+        target: &str, 
+        direction: RelationshipDirection,
+        rel_type: Option<&str>
+    ) -> PatternEdge {
+        PatternEdge {
+            identifier: format!("{}-{}", source, target),
+            source: source.to_string(),
+            target: target.to_string(),
+            rel_type: rel_type.map(String::from),
+            properties: HashMap::new(),
+            direction,
+            min_depth: Some(1),
+            max_depth: Some(1),
+        }
+    }
+
+    #[test]
+    fn test_build_spanning_tree_simple_chain() {
+        let vertices = vec![
+            create_test_vertex("a"),  // index 0
+            create_test_vertex("b"),  // index 1
+            create_test_vertex("c"),  // index 2
+        ];
+        let edges = vec![
+            create_test_edge_with_type("a", "b", RelationshipDirection::Outbound, Some("FRIEND")),
+            create_test_edge_with_type("b", "c", RelationshipDirection::Outbound, Some("LIKES")),
+        ];
+        let index = EdgeIndex::new(&vertices, &edges);
+        
+        let spanning_tree = build_spanning_tree(&vertices, &edges, &index, 0).unwrap();
+        
+        assert_eq!(spanning_tree.len(), 2);
+        assert_eq!(spanning_tree[0].from_vertex, 0);
+        assert_eq!(spanning_tree[0].to_vertex, 1);
+        assert_eq!(spanning_tree[0].traversal_direction, TraversalDirection::Outbound);
+        assert_eq!(spanning_tree[1].from_vertex, 1);
+        assert_eq!(spanning_tree[1].to_vertex, 2);
+    }
+
+    #[test]
+    fn test_build_spanning_tree_bidirectional() {
+        let vertices = vec![
+            create_test_vertex("a"),  // index 0
+            create_test_vertex("b"),  // index 1
+        ];
+        let edges = vec![
+            create_test_edge_with_type("a", "b", RelationshipDirection::Bidirectional, Some("CONNECTED")),
+        ];
+        let index = EdgeIndex::new(&vertices, &edges);
+        
+        let spanning_tree = build_spanning_tree(&vertices, &edges, &index, 0).unwrap();
+        
+        assert_eq!(spanning_tree.len(), 1);
+        assert_eq!(spanning_tree[0].from_vertex, 0);
+        assert_eq!(spanning_tree[0].to_vertex, 1);
+        assert_eq!(spanning_tree[0].traversal_direction, TraversalDirection::Any);
+    }
+
+    #[test]
+    fn test_generate_edge_traversal_outbound() {
+        let vertices = vec![
+            create_test_vertex("a"),  // index 0
+            create_test_vertex("b"),  // index 1
+        ];
+        let edges = vec![
+            create_test_edge_with_type("a", "b", RelationshipDirection::Outbound, Some("FRIEND")),
+        ];
+        
+        let spanning_edge = SpanningTreeEdge {
+            from_vertex: 0,
+            to_vertex: 1,
+            edge_index: 0,
+            traversal_direction: TraversalDirection::Outbound,
+        };
+        
+        let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges).unwrap();
+        
+        assert_eq!(traversal.content, "FOR b, a-b IN 1..1 OUTBOUND a._id FRIEND");
+        assert_eq!(traversal.indent, 1);
+    }
+
+    #[test]
+    fn test_generate_edge_traversal_inbound() {
+        let vertices = vec![
+            create_test_vertex("a"),  // index 0
+            create_test_vertex("b"),  // index 1
+        ];
+        let edges = vec![
+            create_test_edge_with_type("a", "b", RelationshipDirection::Inbound, Some("FRIEND")),
+        ];
+        
+        let spanning_edge = SpanningTreeEdge {
+            from_vertex: 1,
+            to_vertex: 0,
+            edge_index: 0,
+            traversal_direction: TraversalDirection::Inbound,
+        };
+        
+        let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges).unwrap();
+        
+        assert_eq!(traversal.content, "FOR a, a-b IN 1..1 INBOUND b._id FRIEND");
+        assert_eq!(traversal.indent, 1);
+    }
+
+    #[test]
+    fn test_generate_edge_traversal_any() {
+        let vertices = vec![
+            create_test_vertex("a"),  // index 0
+            create_test_vertex("b"),  // index 1
+        ];
+        let edges = vec![
+            create_test_edge_with_type("a", "b", RelationshipDirection::Bidirectional, Some("FRIEND")),
+        ];
+        
+        let spanning_edge = SpanningTreeEdge {
+            from_vertex: 0,
+            to_vertex: 1,
+            edge_index: 0,
+            traversal_direction: TraversalDirection::Any,
+        };
+        
+        let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges).unwrap();
+        
+        assert_eq!(traversal.content, "FOR b, a-b IN 1..1 ANY a._id FRIEND");
+        assert_eq!(traversal.indent, 1);
+    }
+
+    #[test]
+    fn test_match_to_aql_with_edges() {
+        let vertices = vec![
+            create_test_vertex("user"),
+            create_test_vertex("friend"),
+        ];
+        let edges = vec![
+            create_test_edge_with_type("user", "friend", RelationshipDirection::Outbound, Some("FRIEND")),
+        ];
+        let index = EdgeIndex::new(&vertices, &edges);
+        
+        let aql_lines = match_to_aql(&vertices, &edges, &index).unwrap();
+        
+        assert_eq!(aql_lines.len(), 2);
+        assert_eq!(aql_lines[0].content, "FOR user IN vertices");
+        assert_eq!(aql_lines[0].indent, 0);
+        assert_eq!(aql_lines[1].content, "FOR friend, user-friend IN 1..1 OUTBOUND user._id FRIEND");
+        assert_eq!(aql_lines[1].indent, 1);
+    }
+
+    #[test] 
+    fn test_edge_collection_name_error() {
+        let edge = PatternEdge {
+            identifier: "test".to_string(),
+            source: "a".to_string(),
+            target: "b".to_string(),
+            rel_type: None, // No type specified
+            properties: HashMap::new(),
+            direction: RelationshipDirection::Outbound,
+            min_depth: Some(1),
+            max_depth: Some(1),
+        };
+        
+        let result = derive_edge_collection_name(&edge);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Edge type is required but not specified");
     }
 }
