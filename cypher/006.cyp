@@ -1,1 +1,1 @@
-MATCH (v) -[e]- (w)
+MATCH (v) -[e:E]- (w) RETURN DISTINCT *

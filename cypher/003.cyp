@@ -1,1 +1,1 @@
-MATCH (v1) -[:t]-> (v2)
+MATCH (v1) -[:t]-> (v2) RETURN *

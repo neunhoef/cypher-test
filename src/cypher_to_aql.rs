@@ -1,4 +1,4 @@
-use crate::cypher::{PatternVertex, PatternEdge, RelationshipDirection};
+use crate::cypher::{PatternVertex, PatternEdge, RelationshipDirection, ReturnClause, ReturnProjection};
 use std::collections::{HashMap, HashSet, VecDeque};
 use serde_json::Value;
 
@@ -390,12 +390,12 @@ fn find_anchor_vertex(vertices: &[PatternVertex]) -> Option<usize> {
 /// * `edge_index` - Edge index for the pattern graph
 /// 
 /// # Returns
-/// * `Result<Vec<AQLLine>, String>` with AQL lines or error message
+/// * `Result<(Vec<AQLLine>, usize), String>` with AQL lines and current indentation level, or error message
 pub fn match_to_aql(
     vertices: &[PatternVertex], 
     edges: &[PatternEdge],
     edge_index: &EdgeIndex
-) -> Result<Vec<AQLLine>, String> {
+) -> Result<(Vec<AQLLine>, usize), String> {
     if vertices.is_empty() {
         return Err("No vertices in pattern graph".to_string());
     }
@@ -461,7 +461,7 @@ pub fn match_to_aql(
         }
     }
     
-    Ok(aql_lines)
+    Ok((aql_lines, current_indent))
 }
 
 /// Check if the pattern graph is connected when viewed as an undirected graph
@@ -783,7 +783,7 @@ mod tests {
         ];
         let index = EdgeIndex::new(&vertices, &edges);
         
-        let aql_lines = match_to_aql(&vertices, &edges, &index).unwrap();
+        let (aql_lines, _current_indent) = match_to_aql(&vertices, &edges, &index).unwrap();
         
         assert_eq!(aql_lines.len(), 2);
         assert_eq!(aql_lines[0].content, "FOR user IN vertices");
@@ -811,4 +811,138 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Edge type is required but not specified");
     }
+}
+
+/// Collects all variable names that are exported from the AQL lines
+/// These are the variables that can be referenced in the RETURN clause
+fn collect_exported_variables(aql_lines: &[AQLLine]) -> Vec<String> {
+    let mut exported_vars = Vec::new();
+    
+    for line in aql_lines {
+        for var in &line.exposed_variables {
+            if !exported_vars.contains(var) {
+                exported_vars.push(var.clone());
+            }
+        }
+    }
+    
+    exported_vars
+}
+
+/// Generates AQL RETURN statement from a RETURN clause
+/// Returns AQL lines for the RETURN statement
+pub fn generate_return_clause(
+    return_clause: &ReturnClause,
+    aql_lines: &[AQLLine],
+    indent: usize,
+) -> Result<Vec<AQLLine>, String> {
+    let mut result = Vec::new();
+    
+    // Collect all exported variables from the query so far
+    let exported_vars = collect_exported_variables(aql_lines);
+    
+    if return_clause.return_star {
+        // Handle RETURN * - return all exported variables
+        result.push(generate_return_star(&exported_vars, return_clause.distinct, indent));
+    } else if return_clause.projections.is_empty() {
+        return Err("RETURN clause must specify either * or at least one projection".to_string());
+    } else {
+        // Handle specific projections
+        result.push(generate_return_projections(&return_clause.projections, &exported_vars, return_clause.distinct, indent)?);
+    }
+    
+    Ok(result)
+}
+
+/// Generates AQL RETURN statement for RETURN *
+fn generate_return_star(exported_vars: &[String], distinct: bool, indent: usize) -> AQLLine {
+    let distinct_keyword = if distinct { "DISTINCT " } else { "" };
+    
+    if exported_vars.is_empty() {
+        // No variables to return
+        AQLLine {
+            content: format!("RETURN {distinct_keyword}{{}}"),
+            indent,
+            exposed_variables: vec![],
+        }
+    } else {
+        // Create JSON object with all exported variables
+        let json_properties: Vec<String> = exported_vars.to_vec(); // Use abbreviated syntax {x} instead of {x: x}
+        let json_object = format!("{{{}}}", json_properties.join(", "));
+        
+        AQLLine {
+            content: format!("RETURN {distinct_keyword}{json_object}"),
+            indent,
+            exposed_variables: vec![],
+        }
+    }
+}
+
+/// Generates AQL RETURN statement for specific projections
+fn generate_return_projections(
+    projections: &[ReturnProjection],
+    exported_vars: &[String],
+    distinct: bool,
+    indent: usize,
+) -> Result<AQLLine, String> {
+    let distinct_keyword = if distinct { "DISTINCT " } else { "" };
+    
+    let mut json_properties = Vec::new();
+    
+    for projection in projections {
+        let column_name = projection.alias.as_ref()
+            .unwrap_or(&projection.expression);
+        
+        // Validate that the expression refers to an exported variable
+        // For now, we only support simple identifier expressions
+        if projection.is_identifier && !exported_vars.contains(&projection.expression) {
+            return Err(format!(
+                "Variable '{}' is not available in the current scope. Available variables: {}",
+                projection.expression,
+                exported_vars.join(", ")
+            ));
+        }
+        
+        // Use abbreviated syntax when column name equals expression
+        let json_property = if column_name == &projection.expression {
+            column_name.clone()
+        } else {
+            format!("{}: {}", column_name, projection.expression)
+        };
+        json_properties.push(json_property);
+    }
+    
+    let json_object = format!("{{{}}}", json_properties.join(", "));
+    
+    Ok(AQLLine {
+        content: format!("RETURN {distinct_keyword}{json_object}"),
+        indent,
+        exposed_variables: vec![],
+    })
+}
+
+/// Generates a complete AQL query from MATCH and RETURN clauses
+pub fn generate_complete_aql(
+    vertices: &[PatternVertex], 
+    edges: &[PatternEdge],
+    edge_index: &EdgeIndex,
+    return_clause: &ReturnClause,
+) -> Result<Vec<AQLLine>, String> {
+    // First generate the MATCH part
+    let (mut aql_lines, current_indent) = match_to_aql(vertices, edges, edge_index)?;
+    
+    // Then generate the RETURN part using the current indentation level
+    let return_lines = generate_return_clause(return_clause, &aql_lines, current_indent)?;
+    aql_lines.extend(return_lines);
+    
+    Ok(aql_lines)
+}
+
+/// Formats AQL lines into a complete query string
+pub fn format_aql_query(aql_lines: &[AQLLine]) -> String {
+    aql_lines
+        .iter()
+        .map(|line| format!("{}{}", "  ".repeat(line.indent), line.content))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

@@ -11,8 +11,8 @@ use libcypher_parser_sys::*;
 // Include our modules
 mod cypher;
 mod cypher_to_aql;
-use cypher::{GraphError, find_match_return_pattern, make_match_graph, print_pattern_graph};
-use cypher_to_aql::{EdgeIndex, is_connected, match_to_aql};
+use cypher::{GraphError, find_match_and_return_clauses, make_match_graph, print_pattern_graph, parse_return_clause};
+use cypher_to_aql::{EdgeIndex, is_connected, generate_complete_aql, format_aql_query};
 
 fn main() {
     // Get command line arguments
@@ -113,8 +113,8 @@ fn main() {
     // Process query if parsing was successful
     if n_errors == 0 && n_roots > 0 {
         // Try to find MATCH-RETURN pattern
-        match find_match_return_pattern(result) {
-            Some(match_node) => {
+        match find_match_and_return_clauses(result) {
+            Some((match_node, return_node)) => {
                 println!("\n=== Query Structure ===");
                 println!("Found MATCH clause followed by RETURN clause");
 
@@ -128,34 +128,58 @@ fn main() {
                         );
                         print_pattern_graph(&vertices, &edges);
 
-                        // Check pattern graph connectivity
-                        let edge_index = EdgeIndex::new(&vertices, &edges);
-                        let connected = is_connected(&vertices, &edge_index);
-                        println!(
-                            "\n=== Pattern Graph Analysis ===\n\
-                             Graph connectivity: {}",
-                            if connected { "Connected" } else { "Not connected" }
-                        );
+                        // Parse the RETURN clause
+                        match parse_return_clause(return_node) {
+                            Ok(return_clause) => {
+                                println!("\n=== RETURN Clause ===");
+                                if return_clause.return_star {
+                                    println!("RETURN * (all exported variables)");
+                                } else {
+                                    println!("RETURN projections:");
+                                    for projection in &return_clause.projections {
+                                        let alias_str = if let Some(ref alias) = projection.alias {
+                                            format!(" AS {alias}")
+                                        } else {
+                                            String::new()
+                                        };
+                                        println!("  - {}{}", projection.expression, alias_str);
+                                    }
+                                }
+                                if return_clause.distinct {
+                                    println!("DISTINCT: true");
+                                }
 
-                        if !connected {
-                            eprintln!(
-                                "\nError: The pattern graph is not connected. \
-                                 AQL translation requires a connected pattern graph."
-                            );
-                            std::process::exit(1);
-                        }
+                                // Check pattern graph connectivity
+                                let edge_index = EdgeIndex::new(&vertices, &edges);
+                                let connected = is_connected(&vertices, &edge_index);
+                                println!(
+                                    "\n=== Pattern Graph Analysis ===\n\
+                                     Graph connectivity: {}",
+                                    if connected { "Connected" } else { "Not connected" }
+                                );
 
-                        // Generate AQL translation
-                        match match_to_aql(&vertices, &edges, &edge_index) {
-                            Ok(aql_lines) => {
-                                println!("\n=== AQL Translation ===");
-                                for line in aql_lines {
-                                    let indent_str = "  ".repeat(line.indent);
-                                    println!("{}{}", indent_str, line.content);
+                                if !connected {
+                                    eprintln!(
+                                        "\nError: The pattern graph is not connected. \
+                                         AQL translation requires a connected pattern graph."
+                                    );
+                                    std::process::exit(1);
+                                }
+
+                                // Generate complete AQL query with MATCH and RETURN
+                                match generate_complete_aql(&vertices, &edges, &edge_index, &return_clause) {
+                                    Ok(aql_lines) => {
+                                        println!("\n=== AQL Translation ===");
+                                        println!("{}", format_aql_query(&aql_lines));
+                                    }
+                                    Err(e) => {
+                                        eprintln!("\nError generating AQL: {e}");
+                                        std::process::exit(1);
+                                    }
                                 }
                             }
                             Err(e) => {
-                                eprintln!("\nError generating AQL: {e}");
+                                eprintln!("\nError parsing RETURN clause: {e}");
                                 std::process::exit(1);
                             }
                         }

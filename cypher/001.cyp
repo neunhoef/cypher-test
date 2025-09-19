@@ -1,1 +1,1 @@
-MATCH (v)
+MATCH (v) RETURN v
