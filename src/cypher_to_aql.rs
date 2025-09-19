@@ -199,6 +199,7 @@ pub fn build_spanning_tree(
 pub struct AQLLine {
     pub content: String,
     pub indent: usize,
+    pub exposed_variables: Vec<String>,
 }
 
 /// Generate FILTER conditions from a property map
@@ -300,9 +301,16 @@ pub fn generate_edge_traversal(
     let current_indent = *indent;
     *indent += 1; // Increase indentation for subsequent statements
     
+    // Generate exposed variables list
+    let mut exposed_vars = vec![to_vertex.identifier.clone()];
+    if !edge.identifier.is_empty() {
+        exposed_vars.push(edge.identifier.clone());
+    }
+    
     Ok(AQLLine {
         content: for_statement,
         indent: current_indent,
+        exposed_variables: exposed_vars,
     })
 }
 
@@ -327,6 +335,7 @@ pub fn generate_edge_filter(edge: &PatternEdge, indent: usize) -> Option<AQLLine
     Some(AQLLine {
         content: format!("FILTER {filter_conditions}"),
         indent,
+        exposed_variables: vec![], // FILTER statements don't expose new variables
     })
 }
 
@@ -418,6 +427,7 @@ pub fn match_to_aql(
     let for_line = AQLLine {
         content: format!("FOR {variable_name} IN {collection_name}"),
         indent: current_indent,
+        exposed_variables: vec![variable_name.clone()], // Anchor exposes only the vertex identifier
     };
     aql_lines.push(for_line);
     current_indent += 1; // Increase indentation after FOR statement
@@ -428,6 +438,7 @@ pub fn match_to_aql(
         let filter_line = AQLLine {
             content: format!("FILTER {filter_conditions}"),
             indent: current_indent,
+            exposed_variables: vec![], // FILTER statements don't expose new variables
         };
         aql_lines.push(filter_line);
     }
@@ -708,6 +719,7 @@ mod tests {
         
         assert_eq!(traversal.content, "FOR b, a-b IN 1..1 OUTBOUND a._id FRIEND");
         assert_eq!(traversal.indent, 1);
+        assert_eq!(traversal.exposed_variables, vec!["b", "a-b"]);
     }
 
     #[test]
@@ -732,6 +744,7 @@ mod tests {
         
         assert_eq!(traversal.content, "FOR a, a-b IN 1..1 INBOUND b._id FRIEND");
         assert_eq!(traversal.indent, 1);
+        assert_eq!(traversal.exposed_variables, vec!["a", "a-b"]);
     }
 
     #[test]
@@ -756,6 +769,7 @@ mod tests {
         
         assert_eq!(traversal.content, "FOR b, a-b IN 1..1 ANY a._id FRIEND");
         assert_eq!(traversal.indent, 1);
+        assert_eq!(traversal.exposed_variables, vec!["b", "a-b"]);
     }
 
     #[test]
@@ -774,8 +788,10 @@ mod tests {
         assert_eq!(aql_lines.len(), 2);
         assert_eq!(aql_lines[0].content, "FOR user IN vertices");
         assert_eq!(aql_lines[0].indent, 0);
+        assert_eq!(aql_lines[0].exposed_variables, vec!["user"]);
         assert_eq!(aql_lines[1].content, "FOR friend, user-friend IN 1..1 OUTBOUND user._id FRIEND");
         assert_eq!(aql_lines[1].indent, 1);
+        assert_eq!(aql_lines[1].exposed_variables, vec!["friend", "user-friend"]);
     }
 
     #[test] 
