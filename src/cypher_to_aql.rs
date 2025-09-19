@@ -385,6 +385,18 @@ pub fn match_to_aql(
         return Err("No vertices in pattern graph".to_string());
     }
     
+    // Validate that all edges have constant depth 1
+    for edge in edges {
+        if edge.min_depth != Some(1) || edge.max_depth != Some(1) {
+            return Err(format!(
+                "Edge '{}' does not have constant depth 1 (min: {:?}, max: {:?}). Variable length relationships are not supported.", 
+                edge.identifier, 
+                edge.min_depth, 
+                edge.max_depth
+            ));
+        }
+    }
+    
     // Find the anchor vertex (most properties, smallest index for ties)
     let anchor_index = find_anchor_vertex(vertices)
         .ok_or("Failed to find anchor vertex".to_string())?;
