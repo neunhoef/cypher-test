@@ -644,7 +644,7 @@ mod tests {
         rel_type: Option<&str>
     ) -> PatternEdge {
         PatternEdge {
-            identifier: format!("{}-{}", source, target),
+            identifier: format!("{}_{}", source, target),
             source: source.to_string(),
             target: target.to_string(),
             rel_type: rel_type.map(String::from),
@@ -717,9 +717,9 @@ mod tests {
         let mut indent = 1;
         let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent).unwrap();
         
-        assert_eq!(traversal.content, "FOR b, a-b IN 1..1 OUTBOUND a._id FRIEND");
+        assert_eq!(traversal.content, "FOR b, a_b IN 1..1 OUTBOUND a._id FRIEND");
         assert_eq!(traversal.indent, 1);
-        assert_eq!(traversal.exposed_variables, vec!["b", "a-b"]);
+        assert_eq!(traversal.exposed_variables, vec!["b", "a_b"]);
     }
 
     #[test]
@@ -742,9 +742,9 @@ mod tests {
         let mut indent = 1;
         let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent).unwrap();
         
-        assert_eq!(traversal.content, "FOR a, a-b IN 1..1 INBOUND b._id FRIEND");
+        assert_eq!(traversal.content, "FOR a, a_b IN 1..1 INBOUND b._id FRIEND");
         assert_eq!(traversal.indent, 1);
-        assert_eq!(traversal.exposed_variables, vec!["a", "a-b"]);
+        assert_eq!(traversal.exposed_variables, vec!["a", "a_b"]);
     }
 
     #[test]
@@ -767,9 +767,9 @@ mod tests {
         let mut indent = 1;
         let traversal = generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent).unwrap();
         
-        assert_eq!(traversal.content, "FOR b, a-b IN 1..1 ANY a._id FRIEND");
+        assert_eq!(traversal.content, "FOR b, a_b IN 1..1 ANY a._id FRIEND");
         assert_eq!(traversal.indent, 1);
-        assert_eq!(traversal.exposed_variables, vec!["b", "a-b"]);
+        assert_eq!(traversal.exposed_variables, vec!["b", "a_b"]);
     }
 
     #[test]
@@ -789,9 +789,9 @@ mod tests {
         assert_eq!(aql_lines[0].content, "FOR user IN vertices");
         assert_eq!(aql_lines[0].indent, 0);
         assert_eq!(aql_lines[0].exposed_variables, vec!["user"]);
-        assert_eq!(aql_lines[1].content, "FOR friend, user-friend IN 1..1 OUTBOUND user._id FRIEND");
+        assert_eq!(aql_lines[1].content, "FOR friend, user_friend IN 1..1 OUTBOUND user._id FRIEND");
         assert_eq!(aql_lines[1].indent, 1);
-        assert_eq!(aql_lines[1].exposed_variables, vec!["friend", "user-friend"]);
+        assert_eq!(aql_lines[1].exposed_variables, vec!["friend", "user_friend"]);
     }
 
     #[test] 
