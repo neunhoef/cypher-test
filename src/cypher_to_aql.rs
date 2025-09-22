@@ -594,7 +594,7 @@ mod tests {
         
         // Create a pattern graph with a named path
         let mut paths = crate::pattern_graph::PatternPaths::new();
-        paths.insert("mypath".to_string(), vec![0]); // path includes first edge
+        paths.insert("mypath".to_string(), crate::pattern_graph::PatternPath::ProperPath(vec![0])); // path includes first edge
         let pattern_graph = PatternGraph::from_components(vertices, edges, paths);
         
         // Create return clause with path identifier
@@ -619,6 +619,156 @@ mod tests {
         assert!(query.contains("FOR user IN vertices"));
         assert!(query.contains("FOR friend, user_friend IN 1..1 OUTBOUND user._id KNOWS"));
         assert!(query.contains("RETURN {mypath: {\"vertices\": [user, friend], \"edges\": [user_friend]}}"));
+    }
+
+    #[test]
+    fn test_vertex_only_path_in_return() {
+        use crate::cypher::{ReturnClause, ReturnProjection};
+        
+        // Create a simple pattern graph with a single vertex path
+        let vertices = vec![
+            create_test_vertex("user"),
+        ];
+        let edges = vec![];
+        
+        // Create a pattern graph with a vertex-only path
+        let mut paths = crate::pattern_graph::PatternPaths::new();
+        paths.insert("mypath".to_string(), crate::pattern_graph::PatternPath::VertexPath(0)); // path includes only vertex 0
+        let pattern_graph = PatternGraph::from_components(vertices, edges, paths);
+        
+        // Create return clause with path identifier
+        let return_clause = ReturnClause {
+            distinct: false,
+            return_star: false,
+            projections: vec![ReturnProjection {
+                expression: "mypath".to_string(),
+                alias: None,
+                is_identifier: true,
+            }],
+        };
+        
+        // Generate complete AQL query
+        let result = generate_complete_aql(&pattern_graph, &return_clause);
+        assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+        
+        let aql_lines = result.unwrap();
+        let query = format_aql_query(&aql_lines);
+        
+        // Verify the query contains vertex-only path construction
+        assert!(query.contains("FOR user IN vertices"));
+        assert!(query.contains("RETURN {mypath: {\"vertices\": [user], \"edges\": []}}"));
+        // Should not contain any edge traversal
+        assert!(!query.contains("OUTBOUND"));
+        assert!(!query.contains("INBOUND"));
+    }
+
+    #[test]
+    fn test_generate_path_expression_vertex_only() {
+        // Create a simple pattern graph with a single vertex
+        let vertices = vec![
+            create_test_vertex("node1"),
+        ];
+        let edges = vec![];
+        
+        // Create a pattern graph with a vertex-only path
+        let mut paths = crate::pattern_graph::PatternPaths::new();
+        paths.insert("single_vertex".to_string(), crate::pattern_graph::PatternPath::VertexPath(0));
+        let pattern_graph = PatternGraph::from_components(vertices, edges, paths);
+        
+        // Test the path expression generation
+        let result = generate_path_expression("single_vertex", &pattern_graph);
+        assert!(result.is_ok(), "Failed to generate path expression: {:?}", result.err());
+        
+        let expression = result.unwrap();
+        assert_eq!(expression, "{\"vertices\": [node1], \"edges\": []}");
+    }
+
+    #[test]
+    fn test_generate_path_expression_proper_path() {
+        // Create a pattern graph with edges
+        let vertices = vec![
+            create_test_vertex("node1"),
+            create_test_vertex("node2"),
+        ];
+        let edges = vec![
+            create_test_edge_with_type("node1", "node2", RelationshipDirection::Outbound, Some("CONNECTS")),
+        ];
+        
+        // Create a pattern graph with a proper path
+        let mut paths = crate::pattern_graph::PatternPaths::new();
+        paths.insert("proper_path".to_string(), crate::pattern_graph::PatternPath::ProperPath(vec![0]));
+        let pattern_graph = PatternGraph::from_components(vertices, edges, paths);
+        
+        // Test the path expression generation
+        let result = generate_path_expression("proper_path", &pattern_graph);
+        assert!(result.is_ok(), "Failed to generate path expression: {:?}", result.err());
+        
+        let expression = result.unwrap();
+        assert_eq!(expression, "{\"vertices\": [node1, node2], \"edges\": [node1_node2]}");
+    }
+
+    #[test]
+    fn test_generate_path_expression_invalid_vertex_index() {
+        let vertices = vec![
+            create_test_vertex("node1"),
+        ];
+        let edges = vec![];
+        
+        // Create a pattern graph with invalid vertex index
+        let mut paths = crate::pattern_graph::PatternPaths::new();
+        paths.insert("invalid_vertex".to_string(), crate::pattern_graph::PatternPath::VertexPath(1)); // Invalid index
+        let pattern_graph = PatternGraph::from_components(vertices, edges, paths);
+        
+        // Test the path expression generation should fail
+        let result = generate_path_expression("invalid_vertex", &pattern_graph);
+        assert!(result.is_err(), "Should fail with invalid vertex index");
+        assert!(result.unwrap_err().contains("Invalid vertex index 1"));
+    }
+
+    #[test]
+    fn test_multiple_vertex_paths_same_vertex() {
+        use crate::cypher::{ReturnClause, ReturnProjection};
+        
+        // Create a pattern graph with a single vertex referenced by multiple paths
+        let vertices = vec![
+            create_test_vertex("shared_node"),
+        ];
+        let edges = vec![];
+        
+        // Create multiple vertex-only paths pointing to the same vertex
+        let mut paths = crate::pattern_graph::PatternPaths::new();
+        paths.insert("path1".to_string(), crate::pattern_graph::PatternPath::VertexPath(0));
+        paths.insert("path2".to_string(), crate::pattern_graph::PatternPath::VertexPath(0));
+        let pattern_graph = PatternGraph::from_components(vertices, edges, paths);
+        
+        // Create return clause returning both paths
+        let return_clause = ReturnClause {
+            distinct: false,
+            return_star: false,
+            projections: vec![
+                ReturnProjection {
+                    expression: "path1".to_string(),
+                    alias: None,
+                    is_identifier: true,
+                },
+                ReturnProjection {
+                    expression: "path2".to_string(), 
+                    alias: None,
+                    is_identifier: true,
+                },
+            ],
+        };
+        
+        // Generate complete AQL query
+        let result = generate_complete_aql(&pattern_graph, &return_clause);
+        assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+        
+        let aql_lines = result.unwrap();
+        let query = format_aql_query(&aql_lines);
+        
+        // Both paths should generate the same vertex-only path structure
+        assert!(query.contains("path1: {\"vertices\": [shared_node], \"edges\": []}"));
+        assert!(query.contains("path2: {\"vertices\": [shared_node], \"edges\": []}"));
     }
 }
 
@@ -656,48 +806,67 @@ fn collect_exported_variables(aql_lines: &[AQLLine], pattern_graph: &PatternGrap
 /// # Returns
 /// * `Result<String, String>` - AQL expression or error message
 fn generate_path_expression(path_name: &str, pattern_graph: &PatternGraph) -> Result<String, String> {
-    // Get the edge indices for this path
-    let path_edges = pattern_graph.paths.get(path_name)
+    use crate::pattern_graph::PatternPath;
+    
+    // Get the path for this name
+    let pattern_path = pattern_graph.paths.get(path_name)
         .ok_or_else(|| format!("Path '{path_name}' not found in pattern graph"))?;
     
-    if path_edges.is_empty() {
-        return Err(format!("Path '{path_name}' has no edges"));
+    match pattern_path {
+        PatternPath::VertexPath(vertex_index) => {
+            // Single vertex path
+            if *vertex_index >= pattern_graph.vertices.len() {
+                return Err(format!("Invalid vertex index {vertex_index} in path '{path_name}'"));
+            }
+            
+            let vertex = &pattern_graph.vertices[*vertex_index];
+            let vertices_array = format!("[{}]", vertex.identifier);
+            let edges_array = "[]".to_string();
+            
+            Ok(format!("{{\"vertices\": {vertices_array}, \"edges\": {edges_array}}}"))
+        }
+        PatternPath::ProperPath(edge_indices) => {
+            // Path with edges
+            if edge_indices.is_empty() {
+                return Err(format!("ProperPath '{path_name}' has no edges"));
+            }
+            
+            // Build the vertices array by collecting all vertices along the path
+            let mut vertex_identifiers = Vec::new();
+            let mut seen_vertices = std::collections::HashSet::new();
+            
+            for &edge_index in edge_indices {
+                if edge_index >= pattern_graph.edges.len() {
+                    return Err(format!("Invalid edge index {edge_index} in path '{path_name}'"));
+                }
+                
+                let edge = &pattern_graph.edges[edge_index];
+                
+                // Add source vertex if not seen
+                if !seen_vertices.contains(&edge.source) {
+                    vertex_identifiers.push(edge.source.clone());
+                    seen_vertices.insert(edge.source.clone());
+                }
+                
+                // Add target vertex if not seen
+                if !seen_vertices.contains(&edge.target) {
+                    vertex_identifiers.push(edge.target.clone());
+                    seen_vertices.insert(edge.target.clone());
+                }
+            }
+            
+            // Build the edges array
+            let edge_identifiers: Vec<String> = edge_indices.iter()
+                .map(|&edge_index| pattern_graph.edges[edge_index].identifier.clone())
+                .collect();
+            
+            // Generate AQL expression
+            let vertices_array = format!("[{}]", vertex_identifiers.join(", "));
+            let edges_array = format!("[{}]", edge_identifiers.join(", "));
+            
+            Ok(format!("{{\"vertices\": {vertices_array}, \"edges\": {edges_array}}}"))
+        }
     }
-    
-    // Build the vertices array by collecting all vertices along the path
-    let mut vertex_identifiers = Vec::new();
-    let mut seen_vertices = std::collections::HashSet::new();
-    
-    for &edge_index in path_edges {
-        if edge_index >= pattern_graph.edges.len() {
-            return Err(format!("Invalid edge index {edge_index} in path '{path_name}'"));
-        }
-        
-        let edge = &pattern_graph.edges[edge_index];
-        
-        // Add source vertex if not seen
-        if !seen_vertices.contains(&edge.source) {
-            vertex_identifiers.push(edge.source.clone());
-            seen_vertices.insert(edge.source.clone());
-        }
-        
-        // Add target vertex if not seen
-        if !seen_vertices.contains(&edge.target) {
-            vertex_identifiers.push(edge.target.clone());
-            seen_vertices.insert(edge.target.clone());
-        }
-    }
-    
-    // Build the edges array
-    let edge_identifiers: Vec<String> = path_edges.iter()
-        .map(|&edge_index| pattern_graph.edges[edge_index].identifier.clone())
-        .collect();
-    
-    // Generate AQL expression
-    let vertices_array = format!("[{}]", vertex_identifiers.join(", "));
-    let edges_array = format!("[{}]", edge_identifiers.join(", "));
-    
-    Ok(format!("{{\"vertices\": {vertices_array}, \"edges\": {edges_array}}}"))
 }
 
 /// Generates AQL RETURN statement from a RETURN clause

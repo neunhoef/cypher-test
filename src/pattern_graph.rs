@@ -70,13 +70,19 @@ impl std::fmt::Display for GraphError {
 
 impl std::error::Error for GraphError {}
 
-/// Type alias for a pattern path, which is a sequence of edge indices
-pub type PatternPath = Vec<usize>;
+/// Represents a pattern path, which can either be a proper path with edges or a single vertex
+#[derive(Debug, Clone, PartialEq)]
+pub enum PatternPath {
+    /// A proper path with one or more edges (sequence of edge indices)
+    ProperPath(Vec<usize>),
+    /// A vertex-only path containing just a single vertex (vertex index)
+    VertexPath(usize),
+}
 
 /// Represents a collection of named pattern paths
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternPaths {
-    /// Internal mapping from path names to edge indices
+    /// Internal mapping from path names to pattern paths
     paths: HashMap<String, PatternPath>,
 }
 
@@ -308,8 +314,16 @@ impl PatternGraph {
     /// Gets edges for a specific path name
     #[allow(dead_code)]
     pub fn get_path_edges(&self, path_name: &str) -> Option<Vec<&PatternEdge>> {
-        self.paths.get(path_name).map(|indices| {
-            indices.iter().map(|&i| &self.edges[i]).collect()
+        self.paths.get(path_name).map(|path| {
+            match path {
+                PatternPath::ProperPath(indices) => {
+                    indices.iter().map(|&i| &self.edges[i]).collect()
+                }
+                PatternPath::VertexPath(_) => {
+                    // Vertex-only path has no edges
+                    vec![]
+                }
+            }
         })
     }
 
@@ -335,9 +349,21 @@ impl PatternGraph {
     }
 
     /// Converts to the old tuple format for backward compatibility
+    /// Note: This method only works with ProperPath variants and will panic on VertexPath variants
     #[allow(dead_code)]
     pub fn into_tuple(self) -> (Vec<PatternVertex>, Vec<PatternEdge>, HashMap<String, Vec<usize>>) {
-        (self.vertices, self.edges, self.paths.paths)
+        let mut old_paths = HashMap::new();
+        for (name, path) in self.paths.paths {
+            match path {
+                PatternPath::ProperPath(edges) => {
+                    old_paths.insert(name, edges);
+                }
+                PatternPath::VertexPath(_) => {
+                    panic!("Cannot convert VertexPath to old tuple format - use new PatternPath enum instead");
+                }
+            }
+        }
+        (self.vertices, self.edges, old_paths)
     }
 
     /// Creates a PatternGraph from the old tuple format
@@ -346,8 +372,12 @@ impl PatternGraph {
         tuple: (Vec<PatternVertex>, Vec<PatternEdge>, HashMap<String, Vec<usize>>),
     ) -> Self {
         let (vertices, edges, path_map) = tuple;
+        let mut converted_paths = HashMap::new();
+        for (name, edge_indices) in path_map {
+            converted_paths.insert(name, PatternPath::ProperPath(edge_indices));
+        }
         let paths = PatternPaths {
-            paths: path_map,
+            paths: converted_paths,
         };
         Self {
             vertices,
@@ -515,7 +545,7 @@ pub fn make_match_graph(
     let mut node_counter = 0u32;
     let mut rel_counter = 0usize;
     let mut path_counter = 0usize;
-    let mut path_edge_mapping: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut path_edge_mapping: HashMap<String, PatternPath> = HashMap::new();
 
     // Get the pattern from the MATCH statement (should be the first child)
     let n_children = unsafe { cypher_astnode_nchildren(match_node) };
@@ -538,7 +568,7 @@ fn process_pattern(
     node_counter: &mut u32,
     rel_counter: &mut usize,
     path_counter: &mut usize,
-    path_edge_mapping: &mut HashMap<String, Vec<usize>>,
+    path_edge_mapping: &mut HashMap<String, PatternPath>,
 ) -> Result<(), GraphError> {
     if pattern.is_null() {
         return Err(GraphError::InvalidAstNode);
@@ -571,12 +601,29 @@ fn process_pattern(
             
             // Process the pattern path and collect edge indices
             let edges_start_index = edges.len();
+            let vertices_start_index = vertices.len();
             process_pattern_path(path, vertices, edges, node_counter, rel_counter)?;
             let edges_end_index = edges.len();
+            let vertices_end_index = vertices.len();
             
-            // Map the edges to this path name
-            let edge_indices: Vec<usize> = (edges_start_index..edges_end_index).collect();
-            path_edge_mapping.insert(path_name, edge_indices);
+            // Determine if this is a vertex-only path or a proper path with edges
+            if edges_start_index == edges_end_index {
+                // No edges were added - this is a vertex-only path
+                // We need to find the vertex that was referenced in this pattern
+                let vertex_index = if vertices_start_index < vertices_end_index {
+                    // A vertex was added, use the last added vertex
+                    vertices_end_index - 1
+                } else {
+                    // No new vertex was added, so we need to find the existing vertex
+                    // This happens when the same vertex appears in multiple paths
+                    find_vertex_in_pattern(path, vertices)?
+                };
+                path_edge_mapping.insert(path_name, PatternPath::VertexPath(vertex_index));
+            } else {
+                // Edges were added - this is a proper path
+                let edge_indices: Vec<usize> = (edges_start_index..edges_end_index).collect();
+                path_edge_mapping.insert(path_name, PatternPath::ProperPath(edge_indices));
+            }
         }
     } else if pattern_type == cypher_pattern_path {
         // Anonymous path - invent a name
@@ -584,24 +631,58 @@ fn process_pattern(
         let path_name = format!("path{}", *path_counter);
         
         let edges_start_index = edges.len();
+        let vertices_start_index = vertices.len();
         process_pattern_path(pattern, vertices, edges, node_counter, rel_counter)?;
         let edges_end_index = edges.len();
+        let vertices_end_index = vertices.len();
         
-        // Map the edges to this path name
-        let edge_indices: Vec<usize> = (edges_start_index..edges_end_index).collect();
-        path_edge_mapping.insert(path_name, edge_indices);
+        // Determine if this is a vertex-only path or a proper path with edges
+        if edges_start_index == edges_end_index {
+            // No edges were added - this is a vertex-only path
+            // We need to find the vertex that was referenced in this pattern
+            let vertex_index = if vertices_start_index < vertices_end_index {
+                // A vertex was added, use the last added vertex
+                vertices_end_index - 1
+            } else {
+                // No new vertex was added, so we need to find the existing vertex
+                // This happens when the same vertex appears in multiple paths
+                find_vertex_in_pattern(pattern, vertices)?
+            };
+            path_edge_mapping.insert(path_name, PatternPath::VertexPath(vertex_index));
+        } else {
+            // Edges were added - this is a proper path
+            let edge_indices: Vec<usize> = (edges_start_index..edges_end_index).collect();
+            path_edge_mapping.insert(path_name, PatternPath::ProperPath(edge_indices));
+        }
     } else {
         // Try to process as pattern path anyway with invented name
         *path_counter += 1;
         let path_name = format!("path{}", *path_counter);
         
         let edges_start_index = edges.len();
+        let vertices_start_index = vertices.len();
         process_pattern_path(pattern, vertices, edges, node_counter, rel_counter)?;
         let edges_end_index = edges.len();
+        let vertices_end_index = vertices.len();
         
-        // Map the edges to this path name
-        let edge_indices: Vec<usize> = (edges_start_index..edges_end_index).collect();
-        path_edge_mapping.insert(path_name, edge_indices);
+        // Determine if this is a vertex-only path or a proper path with edges
+        if edges_start_index == edges_end_index {
+            // No edges were added - this is a vertex-only path
+            // We need to find the vertex that was referenced in this pattern
+            let vertex_index = if vertices_start_index < vertices_end_index {
+                // A vertex was added, use the last added vertex
+                vertices_end_index - 1
+            } else {
+                // No new vertex was added, so we need to find the existing vertex
+                // This happens when the same vertex appears in multiple paths
+                find_vertex_in_pattern(pattern, vertices)?
+            };
+            path_edge_mapping.insert(path_name, PatternPath::VertexPath(vertex_index));
+        } else {
+            // Edges were added - this is a proper path
+            let edge_indices: Vec<usize> = (edges_start_index..edges_end_index).collect();
+            path_edge_mapping.insert(path_name, PatternPath::ProperPath(edge_indices));
+        }
     }
 
     Ok(())
@@ -621,6 +702,70 @@ fn ensure_vertex_exists(
     }
     
     identifier
+}
+
+/// Helper function to find the vertex index for a vertex-only pattern
+/// This is used when the pattern contains only a single vertex that already exists
+fn find_vertex_in_pattern(
+    pattern_path: *const cypher_astnode_t,
+    vertices: &[PatternVertex],
+) -> Result<usize, GraphError> {
+    if pattern_path.is_null() {
+        return Err(GraphError::InvalidAstNode);
+    }
+
+    let n_children = unsafe { cypher_astnode_nchildren(pattern_path) };
+    let cypher_node_pattern = unsafe { CYPHER_AST_NODE_PATTERN };
+    
+    // Look for the first (and should be only) node pattern
+    for i in 0..n_children {
+        let child = unsafe { cypher_astnode_get_child(pattern_path, i) };
+        let child_type = unsafe { cypher_astnode_type(child) };
+        
+        if child_type == cypher_node_pattern {
+            // Extract the vertex identifier
+            let vertex_identifier = if let Some(id) = extract_vertex_identifier_from_node_pattern(child) {
+                id
+            } else {
+                return Err(GraphError::InvalidIdentifier);
+            };
+            
+            // Find the vertex in the vertices list
+            for (index, vertex) in vertices.iter().enumerate() {
+                if vertex.identifier == vertex_identifier {
+                    return Ok(index);
+                }
+            }
+            
+            return Err(GraphError::InvalidIdentifier);
+        }
+    }
+    
+    Err(GraphError::UnsupportedPattern)
+}
+
+/// Helper function to extract vertex identifier from a node pattern
+fn extract_vertex_identifier_from_node_pattern(node: *const cypher_astnode_t) -> Option<String> {
+    if node.is_null() {
+        return None;
+    }
+
+    let n_children = unsafe { cypher_astnode_nchildren(node) };
+    let cypher_identifier = unsafe { CYPHER_AST_IDENTIFIER };
+    
+    for i in 0..n_children {
+        let child = unsafe { cypher_astnode_get_child(node, i) };
+        if child.is_null() {
+            continue;
+        }
+
+        let child_type = unsafe { cypher_astnode_type(child) };
+        if child_type == cypher_identifier {
+            return extract_identifier(child);
+        }
+    }
+    
+    None
 }
 
 /// Processes a pattern path and extracts alternating nodes and relationships

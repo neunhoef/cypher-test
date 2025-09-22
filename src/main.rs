@@ -13,7 +13,7 @@ mod cypher;
 mod cypher_to_aql;
 mod pattern_graph;
 use cypher::{find_match_and_return_clauses, parse_return_clause};
-use pattern_graph::{GraphError, make_match_graph, print_pattern_graph, RelationshipDirection};
+use pattern_graph::{GraphError, make_match_graph, print_pattern_graph, PatternPath, RelationshipDirection};
 use cypher_to_aql::{generate_complete_aql, format_aql_query};
 
 fn main() {
@@ -135,30 +135,42 @@ fn main() {
                         // Print detailed path information after the pattern graph
                         if !graph.paths.is_empty() {
                             println!("\n=== Pattern Paths ===");
-                            for (path_name, edge_indices) in graph.paths.iter() {
+                            for (path_name, pattern_path) in graph.paths.iter() {
                                 println!("\nPath '{path_name}':");
-                                if edge_indices.is_empty() {
-                                    println!("  (no edges)");
-                                } else {
-                                    for &edge_idx in edge_indices {
-                                        if edge_idx < graph.edges.len() {
-                                            let edge = &graph.edges[edge_idx];
-                                            let edge_label = if !edge.identifier.is_empty() {
-                                                format!(" {}", edge.identifier)
-                                            } else {
-                                                String::new()
-                                            };
-                                            let rel_type = edge.rel_type.as_ref().map_or("", |t| t.as_str());
-                                            let direction_arrow = match edge.direction {
-                                                RelationshipDirection::Outbound => "->",
-                                                RelationshipDirection::Inbound => "<-",
-                                                RelationshipDirection::Bidirectional => "<->",
-                                            };
-                                            
-                                            if edge.direction == RelationshipDirection::Inbound {
-                                                println!("  {} <-[{}:{}]- {}", edge.target, edge_label, rel_type, edge.source);
-                                            } else {
-                                                println!("  {} -[{}:{}]{} {}", edge.source, edge_label, rel_type, direction_arrow, edge.target);
+                                match pattern_path {
+                                    PatternPath::VertexPath(vertex_index) => {
+                                        if *vertex_index < graph.vertices.len() {
+                                            let vertex = &graph.vertices[*vertex_index];
+                                            println!("  Single vertex: {}", vertex.identifier);
+                                        } else {
+                                            println!("  Invalid vertex index: {vertex_index}");
+                                        }
+                                    }
+                                    PatternPath::ProperPath(edge_indices) => {
+                                        if edge_indices.is_empty() {
+                                            println!("  (no edges)");
+                                        } else {
+                                            for &edge_idx in edge_indices {
+                                                if edge_idx < graph.edges.len() {
+                                                    let edge = &graph.edges[edge_idx];
+                                                    let edge_label = if !edge.identifier.is_empty() {
+                                                        format!(" {}", edge.identifier)
+                                                    } else {
+                                                        String::new()
+                                                    };
+                                                    let rel_type = edge.rel_type.as_ref().map_or("", |t| t.as_str());
+                                                    let direction_arrow = match edge.direction {
+                                                        RelationshipDirection::Outbound => "->",
+                                                        RelationshipDirection::Inbound => "<-",
+                                                        RelationshipDirection::Bidirectional => "<->",
+                                                    };
+                                                    
+                                                    if edge.direction == RelationshipDirection::Inbound {
+                                                        println!("  {} <-[{}:{}]- {}", edge.target, edge_label, rel_type, edge.source);
+                                                    } else {
+                                                        println!("  {} -[{}:{}]{} {}", edge.source, edge_label, rel_type, direction_arrow, edge.target);
+                                                    }
+                                                }
                                             }
                                         }
                                     }

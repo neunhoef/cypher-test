@@ -1606,7 +1606,7 @@ mod tests {
         assert_eq!(graph.edges.len(), 1);
         assert_eq!(graph.paths.len(), 1);
         assert!(graph.paths.as_inner().contains_key("my_path"));
-        assert_eq!(graph.paths.as_inner()["my_path"], vec![0]); // First edge should have index 0
+        assert_eq!(graph.paths.as_inner()["my_path"], crate::pattern_graph::PatternPath::ProperPath(vec![0])); // First edge should have index 0
 
         // Test 2: Anonymous path should get invented name
         let result = parse_and_extract_graph("MATCH (a)-[r]->(b) RETURN a, b");
@@ -1616,7 +1616,7 @@ mod tests {
         assert_eq!(graph.edges.len(), 1);
         assert_eq!(graph.paths.len(), 1);
         assert!(graph.paths.as_inner().contains_key("path1"));
-        assert_eq!(graph.paths.as_inner()["path1"], vec![0]);
+        assert_eq!(graph.paths.as_inner()["path1"], crate::pattern_graph::PatternPath::ProperPath(vec![0]));
 
         // Test 3: Multiple paths should get different names
         let result = parse_and_extract_graph("MATCH (a)-[r1]->(b), (c)-[r2]->(d) RETURN a, b, c, d");
@@ -1628,8 +1628,14 @@ mod tests {
         assert!(graph.paths.as_inner().contains_key("path1"));
         assert!(graph.paths.as_inner().contains_key("path2"));
         // Each path should contain one edge
-        assert_eq!(graph.paths.as_inner()["path1"].len(), 1);
-        assert_eq!(graph.paths.as_inner()["path2"].len(), 1);
+        match &graph.paths.as_inner()["path1"] {
+            crate::pattern_graph::PatternPath::ProperPath(edges) => assert_eq!(edges.len(), 1),
+            _ => panic!("Expected ProperPath"),
+        }
+        match &graph.paths.as_inner()["path2"] {
+            crate::pattern_graph::PatternPath::ProperPath(edges) => assert_eq!(edges.len(), 1),
+            _ => panic!("Expected ProperPath"),
+        }
 
         // Test 4: Mix of named and anonymous paths
         let result = parse_and_extract_graph("MATCH named_path = (a)-[r1]->(b), (c)-[r2]->(d) RETURN a, b, c, d");
@@ -1649,7 +1655,7 @@ mod tests {
         assert_eq!(graph.edges.len(), 2);
         assert_eq!(graph.paths.len(), 1);
         assert!(graph.paths.as_inner().contains_key("long_path"));
-        assert_eq!(graph.paths.as_inner()["long_path"], vec![0, 1]); // Should contain both edges
+        assert_eq!(graph.paths.as_inner()["long_path"], crate::pattern_graph::PatternPath::ProperPath(vec![0, 1])); // Should contain both edges
     }
 
     #[test]
@@ -1663,15 +1669,28 @@ mod tests {
         assert_eq!(graph.paths.len(), 2);
 
         // Check that the edge indices are valid
-        for (path_name, edge_indices) in graph.paths.iter() {
-            for &edge_idx in edge_indices {
-                assert!(edge_idx < graph.edges.len(), "Edge index {} is out of bounds for path {}", edge_idx, path_name);
+        for (path_name, pattern_path) in graph.paths.iter() {
+            match pattern_path {
+                crate::pattern_graph::PatternPath::ProperPath(edge_indices) => {
+                    for &edge_idx in edge_indices {
+                        assert!(edge_idx < graph.edges.len(), "Edge index {} is out of bounds for path {}", edge_idx, path_name);
+                    }
+                }
+                crate::pattern_graph::PatternPath::VertexPath(vertex_idx) => {
+                    assert!(*vertex_idx < graph.vertices.len(), "Vertex index {} is out of bounds for path {}", vertex_idx, path_name);
+                }
             }
         }
 
         // Verify specific edge types
-        let path1_edges: Vec<&PatternEdge> = graph.paths.as_inner()["path1"].iter().map(|&i| &graph.edges[i]).collect();
-        let path2_edges: Vec<&PatternEdge> = graph.paths.as_inner()["path2"].iter().map(|&i| &graph.edges[i]).collect();
+        let path1_edges: Vec<&PatternEdge> = match &graph.paths.as_inner()["path1"] {
+            crate::pattern_graph::PatternPath::ProperPath(indices) => indices.iter().map(|&i| &graph.edges[i]).collect(),
+            _ => panic!("Expected ProperPath"),
+        };
+        let path2_edges: Vec<&PatternEdge> = match &graph.paths.as_inner()["path2"] {
+            crate::pattern_graph::PatternPath::ProperPath(indices) => indices.iter().map(|&i| &graph.edges[i]).collect(),
+            _ => panic!("Expected ProperPath"),
+        };
         
         assert_eq!(path1_edges.len(), 1);
         assert_eq!(path2_edges.len(), 1);
