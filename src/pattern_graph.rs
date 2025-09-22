@@ -564,8 +564,10 @@ fn process_pattern(
             let path = unsafe { cypher_astnode_get_child(pattern, 1) };
             
             // Extract the path name
-            let path_name = extract_identifier(path_name_node).unwrap_or_else(|| format!("path{path_counter}"));
-            *path_counter += 1;
+            let path_name = extract_identifier(path_name_node).unwrap_or_else(|| {
+                *path_counter += 1;
+                format!("path{}", *path_counter)
+            });
             
             // Process the pattern path and collect edge indices
             let edges_start_index = edges.len();
@@ -578,8 +580,8 @@ fn process_pattern(
         }
     } else if pattern_type == cypher_pattern_path {
         // Anonymous path - invent a name
-        let path_name = format!("path{path_counter}");
         *path_counter += 1;
+        let path_name = format!("path{}", *path_counter);
         
         let edges_start_index = edges.len();
         process_pattern_path(pattern, vertices, edges, node_counter, rel_counter)?;
@@ -590,8 +592,8 @@ fn process_pattern(
         path_edge_mapping.insert(path_name, edge_indices);
     } else {
         // Try to process as pattern path anyway with invented name
-        let path_name = format!("path{path_counter}");
         *path_counter += 1;
+        let path_name = format!("path{}", *path_counter);
         
         let edges_start_index = edges.len();
         process_pattern_path(pattern, vertices, edges, node_counter, rel_counter)?;

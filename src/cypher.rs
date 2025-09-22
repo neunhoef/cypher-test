@@ -1639,7 +1639,7 @@ mod tests {
         assert_eq!(graph.edges.len(), 2);
         assert_eq!(graph.paths.len(), 2);
         assert!(graph.paths.as_inner().contains_key("named_path"));
-        assert!(graph.paths.as_inner().contains_key("path2")); // Second path gets path2 since counter continues
+        assert!(graph.paths.as_inner().contains_key("path1")); // Anonymous path gets path1 in this query
 
         // Test 5: Complex path with multiple edges
         let result = parse_and_extract_graph("MATCH long_path = (a)-[r1]->(b)-[r2]->(c) RETURN a, b, c");
