@@ -1,198 +1,8 @@
-use crate::cypher::{PatternVertex, PatternEdge, RelationshipDirection, ReturnClause, ReturnProjection};
-use std::collections::{HashMap, HashSet, VecDeque};
+use crate::cypher::{PatternVertex, PatternEdge, PatternGraph, ReturnClause, ReturnProjection, TraversalDirection, SpanningTreeEdge};
+use std::collections::HashMap;
 use serde_json::Value;
 
-/// Represents an edge in the spanning tree with direction information
-#[derive(Debug, Clone)]
-pub struct SpanningTreeEdge {
-    /// Index of the source vertex (already visited)
-    pub from_vertex: usize,
-    /// Index of the target vertex (newly discovered)
-    pub to_vertex: usize,
-    /// Reference to the original pattern edge
-    pub edge_index: usize,
-    /// Direction to traverse this edge (OUTBOUND, INBOUND, or ANY)
-    pub traversal_direction: TraversalDirection,
-}
 
-/// Direction for AQL graph traversal
-#[derive(Debug, Clone, PartialEq)]
-pub enum TraversalDirection {
-    Outbound,     // OUTBOUND
-    Inbound,      // INBOUND  
-    Any,          // ANY (for bidirectional edges)
-}
-
-/// Index structure for efficient graph traversal
-/// Maps each vertex index to its neighbors in different directions
-#[derive(Debug, Clone)]
-pub struct EdgeIndex {
-    /// Vector of outgoing neighbors for each vertex (indexed by vertex index)
-    #[allow(dead_code)]
-    pub outgoing: Vec<Vec<usize>>,
-    /// Vector of incoming neighbors for each vertex (indexed by vertex index)
-    #[allow(dead_code)]
-    pub incoming: Vec<Vec<usize>>,
-    /// Vector of all undirected neighbors for each vertex (union of incoming and outgoing)
-    pub undirected: Vec<Vec<usize>>,
-}
-
-impl EdgeIndex {
-    /// Create a new EdgeIndex from vertices and edges
-    pub fn new(vertices: &[PatternVertex], edges: &[PatternEdge]) -> Self {
-        let n_vertices = vertices.len();
-        let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); n_vertices];
-        let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); n_vertices];
-        let mut undirected: Vec<Vec<usize>> = vec![Vec::new(); n_vertices];
-
-        // Create mapping from vertex identifier to index
-        let mut id_to_index: HashMap<String, usize> = HashMap::new();
-        for (index, vertex) in vertices.iter().enumerate() {
-            id_to_index.insert(vertex.identifier.clone(), index);
-        }
-
-        // Process each edge to build neighbor lists
-        for edge in edges {
-            let source_idx = match id_to_index.get(&edge.source) {
-                Some(idx) => *idx,
-                None => continue, // Skip edges referencing non-existent vertices
-            };
-            let target_idx = match id_to_index.get(&edge.target) {
-                Some(idx) => *idx,
-                None => continue, // Skip edges referencing non-existent vertices
-            };
-
-            match edge.direction {
-                RelationshipDirection::Outbound => {
-                    // source -> target
-                    outgoing[source_idx].push(target_idx);
-                    incoming[target_idx].push(source_idx);
-                    
-                    // For undirected connectivity, add both directions
-                    undirected[source_idx].push(target_idx);
-                    undirected[target_idx].push(source_idx);
-                }
-                RelationshipDirection::Inbound => {
-                    // target -> source (inbound from source perspective)
-                    outgoing[target_idx].push(source_idx);
-                    incoming[source_idx].push(target_idx);
-                    
-                    // For undirected connectivity, add both directions
-                    undirected[source_idx].push(target_idx);
-                    undirected[target_idx].push(source_idx);
-                }
-                RelationshipDirection::Bidirectional => {
-                    // Both directions
-                    outgoing[source_idx].push(target_idx);
-                    outgoing[target_idx].push(source_idx);
-                    incoming[source_idx].push(target_idx);
-                    incoming[target_idx].push(source_idx);
-                    
-                    // For undirected connectivity, add both directions
-                    undirected[source_idx].push(target_idx);
-                    undirected[target_idx].push(source_idx);
-                }
-            }
-        }
-
-        EdgeIndex {
-            outgoing,
-            incoming,
-            undirected,
-        }
-    }
-}
-
-/// Build a spanning tree using breadth-first search from a starting vertex
-/// Returns a list of edges in the spanning tree in the order they should be traversed
-/// 
-/// # Arguments
-/// * `vertices` - Vector of pattern vertices
-/// * `edges` - Vector of pattern edges  
-/// * `edge_index` - Precomputed edge index for efficient neighbor lookup
-/// * `start_vertex` - Index of the starting vertex for BFS
-/// 
-/// # Returns
-/// * `Result<Vec<SpanningTreeEdge>, String>` - Ordered list of spanning tree edges or error
-pub fn build_spanning_tree(
-    vertices: &[PatternVertex],
-    edges: &[PatternEdge],
-    edge_index: &EdgeIndex,
-    start_vertex: usize,
-) -> Result<Vec<SpanningTreeEdge>, String> {
-    if start_vertex >= vertices.len() {
-        return Err("Start vertex index out of bounds".to_string());
-    }
-
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-    let mut spanning_tree_edges = Vec::new();
-
-    // Create mapping from vertex identifier to index
-    let mut id_to_index: HashMap<String, usize> = HashMap::new();
-    for (index, vertex) in vertices.iter().enumerate() {
-        id_to_index.insert(vertex.identifier.clone(), index);
-    }
-
-    // Create reverse mapping from vertex pair to edge index and direction info
-    let mut edge_lookup: HashMap<(usize, usize), (usize, TraversalDirection)> = HashMap::new();
-    for (edge_idx, edge) in edges.iter().enumerate() {
-        let source_idx = match id_to_index.get(&edge.source) {
-            Some(idx) => *idx,
-            None => continue,
-        };
-        let target_idx = match id_to_index.get(&edge.target) {
-            Some(idx) => *idx,
-            None => continue,
-        };
-
-        match edge.direction {
-            RelationshipDirection::Outbound => {
-                // source -> target, so traversal is OUTBOUND from source to target
-                edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Outbound));
-                // For reverse direction (target to source), traversal is INBOUND
-                edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Inbound));
-            }
-            RelationshipDirection::Inbound => {
-                // source <- target, so traversal is INBOUND from target to source
-                edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Outbound));
-                // For reverse direction (source to target), traversal is INBOUND  
-                edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Inbound));
-            }
-            RelationshipDirection::Bidirectional => {
-                // Both directions are ANY
-                edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Any));
-                edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Any));
-            }
-        }
-    }
-
-    // Start BFS from the specified vertex
-    queue.push_back(start_vertex);
-    visited.insert(start_vertex);
-
-    while let Some(current_vertex_idx) = queue.pop_front() {
-        // Explore undirected neighbors
-        for &neighbor_idx in &edge_index.undirected[current_vertex_idx] {
-            if !visited.contains(&neighbor_idx) {
-                visited.insert(neighbor_idx);
-                queue.push_back(neighbor_idx);
-
-                // Find the edge information for this traversal
-                if let Some((edge_idx, traversal_direction)) = edge_lookup.get(&(current_vertex_idx, neighbor_idx)) {
-                    spanning_tree_edges.push(SpanningTreeEdge {
-                        from_vertex: current_vertex_idx,
-                        to_vertex: neighbor_idx,
-                        edge_index: *edge_idx,
-                        traversal_direction: traversal_direction.clone(),
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(spanning_tree_edges)
-}
 
 /// Represents a line in an AQL query with indentation
 #[derive(Debug, Clone, PartialEq)]
@@ -385,17 +195,13 @@ fn find_anchor_vertex(vertices: &[PatternVertex]) -> Option<usize> {
 /// Uses breadth-first search to build a spanning tree and generates one-hop traversals
 /// 
 /// # Arguments
-/// * `vertices` - Pattern vertices from the match statement
-/// * `edges` - Pattern edges from the match statement
-/// * `edge_index` - Edge index for the pattern graph
+/// * `pattern_graph` - The pattern graph containing vertices and edges
 /// 
 /// # Returns
 /// * `Result<(Vec<AQLLine>, usize), String>` with AQL lines and current indentation level, or error message
-pub fn match_to_aql(
-    vertices: &[PatternVertex], 
-    edges: &[PatternEdge],
-    edge_index: &EdgeIndex
-) -> Result<(Vec<AQLLine>, usize), String> {
+pub fn match_to_aql(pattern_graph: &PatternGraph) -> Result<(Vec<AQLLine>, usize), String> {
+    let vertices = &pattern_graph.vertices;
+    let edges = &pattern_graph.edges;
     if vertices.is_empty() {
         return Err("No vertices in pattern graph".to_string());
     }
@@ -445,7 +251,7 @@ pub fn match_to_aql(
     
     // If there are edges, build spanning tree and generate edge traversals
     if !edges.is_empty() {
-        let spanning_tree = build_spanning_tree(vertices, edges, edge_index, anchor_index)?;
+        let spanning_tree = pattern_graph.build_spanning_tree(anchor_index)?;
         
         // Generate traversal statements for each edge in the spanning tree
         for spanning_edge in &spanning_tree {
@@ -464,53 +270,12 @@ pub fn match_to_aql(
     Ok((aql_lines, current_indent))
 }
 
-/// Check if the pattern graph is connected when viewed as an undirected graph
-/// 
-/// # Arguments
-/// * `vertices` - Vector of pattern vertices
-/// * `edge_index` - Precomputed edge index for efficient neighbor lookup
-/// 
-/// # Returns
-/// * `true` if the graph is connected (all vertices are reachable from any starting vertex)
-/// * `false` if the graph is disconnected
-/// * `true` if the graph is empty (vacuously connected)
-pub fn is_connected(vertices: &[PatternVertex], edge_index: &EdgeIndex) -> bool {
-    // Empty graph is considered connected
-    if vertices.is_empty() {
-        return true;
-    }
-
-    // Single vertex is connected
-    if vertices.len() == 1 {
-        return true;
-    }
-
-    // Use breadth-first search starting from the first vertex (index 0)
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-
-    // Start BFS from vertex index 0
-    queue.push_back(0);
-    visited.insert(0);
-
-    while let Some(current_vertex_idx) = queue.pop_front() {
-        // Get undirected neighbors of the current vertex
-        for &neighbor_idx in &edge_index.undirected[current_vertex_idx] {
-            if !visited.contains(&neighbor_idx) {
-                visited.insert(neighbor_idx);
-                queue.push_back(neighbor_idx);
-            }
-        }
-    }
-
-    // The graph is connected if we visited all vertices
-    visited.len() == vertices.len()
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use crate::cypher::RelationshipDirection;
 
     fn create_test_vertex(id: &str) -> PatternVertex {
         PatternVertex {
@@ -543,7 +308,8 @@ mod tests {
             create_test_edge("a", "b", RelationshipDirection::Outbound),
         ];
 
-        let index = EdgeIndex::new(&vertices, &edges);
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        let index = pattern_graph.create_edge_index();
 
         assert_eq!(index.outgoing[0], vec![1usize]);
         assert_eq!(index.outgoing[1], Vec::<usize>::new());
@@ -561,7 +327,8 @@ mod tests {
             create_test_edge("a", "b", RelationshipDirection::Bidirectional),
         ];
 
-        let index = EdgeIndex::new(&vertices, &edges);
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        let index = pattern_graph.create_edge_index();
 
         assert_eq!(index.outgoing[0], vec![1usize]);
         assert_eq!(index.outgoing[1], vec![0usize]);
@@ -571,16 +338,15 @@ mod tests {
 
     #[test]
     fn test_is_connected_empty_graph() {
-        let vertices = vec![];
-        let index = EdgeIndex::new(&vertices, &[]);
-        assert!(is_connected(&vertices, &index));
+        let pattern_graph = PatternGraph::from_components(vec![], vec![], crate::cypher::PatternPaths::new());
+        assert!(pattern_graph.is_connected());
     }
 
     #[test]
     fn test_is_connected_single_vertex() {
         let vertices = vec![create_test_vertex("a")];
-        let index = EdgeIndex::new(&vertices, &[]);
-        assert!(is_connected(&vertices, &index));
+        let pattern_graph = PatternGraph::from_components(vertices, vec![], crate::cypher::PatternPaths::new());
+        assert!(pattern_graph.is_connected());
     }
 
     #[test]
@@ -592,8 +358,8 @@ mod tests {
         let edges = vec![
             create_test_edge("a", "b", RelationshipDirection::Outbound),
         ];
-        let index = EdgeIndex::new(&vertices, &edges);
-        assert!(is_connected(&vertices, &index));
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        assert!(pattern_graph.is_connected());
     }
 
     #[test]
@@ -602,8 +368,8 @@ mod tests {
             create_test_vertex("a"),
             create_test_vertex("b"),
         ];
-        let index = EdgeIndex::new(&vertices, &[]);
-        assert!(!is_connected(&vertices, &index));
+        let pattern_graph = PatternGraph::from_components(vertices, vec![], crate::cypher::PatternPaths::new());
+        assert!(!pattern_graph.is_connected());
     }
 
     #[test]
@@ -617,8 +383,8 @@ mod tests {
             create_test_edge("a", "b", RelationshipDirection::Outbound),
             create_test_edge("b", "c", RelationshipDirection::Outbound),
         ];
-        let index = EdgeIndex::new(&vertices, &edges);
-        assert!(is_connected(&vertices, &index));
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        assert!(pattern_graph.is_connected());
     }
 
     #[test]
@@ -633,8 +399,8 @@ mod tests {
             create_test_edge("a", "b", RelationshipDirection::Outbound),
             create_test_edge("c", "d", RelationshipDirection::Outbound),
         ];
-        let index = EdgeIndex::new(&vertices, &edges);
-        assert!(!is_connected(&vertices, &index));
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        assert!(!pattern_graph.is_connected());
     }
 
     fn create_test_edge_with_type(
@@ -666,9 +432,9 @@ mod tests {
             create_test_edge_with_type("a", "b", RelationshipDirection::Outbound, Some("FRIEND")),
             create_test_edge_with_type("b", "c", RelationshipDirection::Outbound, Some("LIKES")),
         ];
-        let index = EdgeIndex::new(&vertices, &edges);
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
         
-        let spanning_tree = build_spanning_tree(&vertices, &edges, &index, 0).unwrap();
+        let spanning_tree = pattern_graph.build_spanning_tree(0).unwrap();
         
         assert_eq!(spanning_tree.len(), 2);
         assert_eq!(spanning_tree[0].from_vertex, 0);
@@ -687,9 +453,9 @@ mod tests {
         let edges = vec![
             create_test_edge_with_type("a", "b", RelationshipDirection::Bidirectional, Some("CONNECTED")),
         ];
-        let index = EdgeIndex::new(&vertices, &edges);
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
         
-        let spanning_tree = build_spanning_tree(&vertices, &edges, &index, 0).unwrap();
+        let spanning_tree = pattern_graph.build_spanning_tree(0).unwrap();
         
         assert_eq!(spanning_tree.len(), 1);
         assert_eq!(spanning_tree[0].from_vertex, 0);
@@ -781,9 +547,9 @@ mod tests {
         let edges = vec![
             create_test_edge_with_type("user", "friend", RelationshipDirection::Outbound, Some("FRIEND")),
         ];
-        let index = EdgeIndex::new(&vertices, &edges);
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
         
-        let (aql_lines, _current_indent) = match_to_aql(&vertices, &edges, &index).unwrap();
+        let (aql_lines, _current_indent) = match_to_aql(&pattern_graph).unwrap();
         
         assert_eq!(aql_lines.len(), 2);
         assert_eq!(aql_lines[0].content, "FOR user IN vertices");
@@ -923,13 +689,11 @@ fn generate_return_projections(
 
 /// Generates a complete AQL query from MATCH and RETURN clauses
 pub fn generate_complete_aql(
-    vertices: &[PatternVertex], 
-    edges: &[PatternEdge],
-    edge_index: &EdgeIndex,
+    pattern_graph: &PatternGraph,
     return_clause: &ReturnClause,
 ) -> Result<Vec<AQLLine>, String> {
     // First generate the MATCH part
-    let (mut aql_lines, current_indent) = match_to_aql(vertices, edges, edge_index)?;
+    let (mut aql_lines, current_indent) = match_to_aql(pattern_graph)?;
     
     // Then generate the RETURN part using the current indentation level
     let return_lines = generate_return_clause(return_clause, &aql_lines, current_indent)?;

@@ -12,7 +12,7 @@ use libcypher_parser_sys::*;
 mod cypher;
 mod cypher_to_aql;
 use cypher::{GraphError, find_match_and_return_clauses, make_match_graph, print_pattern_graph, parse_return_clause, RelationshipDirection};
-use cypher_to_aql::{EdgeIndex, is_connected, generate_complete_aql, format_aql_query};
+use cypher_to_aql::{generate_complete_aql, format_aql_query};
 
 fn main() {
     // Get command line arguments
@@ -186,8 +186,7 @@ fn main() {
                                 }
 
                                 // Check pattern graph connectivity
-                                let edge_index = EdgeIndex::new(&graph.vertices, &graph.edges);
-                                let connected = is_connected(&graph.vertices, &edge_index);
+                                let connected = graph.is_connected();
                                 println!(
                                     "\n=== Pattern Graph Analysis ===\n\
                                      Graph connectivity: {}",
@@ -203,7 +202,7 @@ fn main() {
                                 }
 
                                 // Generate complete AQL query with MATCH and RETURN
-                                match generate_complete_aql(&graph.vertices, &graph.edges, &edge_index, &return_clause) {
+                                match generate_complete_aql(&graph, &return_clause) {
                                     Ok(aql_lines) => {
                                         println!("\n=== AQL Translation ===");
                                         println!("{}", format_aql_query(&aql_lines));

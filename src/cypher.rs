@@ -1,7 +1,7 @@
 #[allow(clippy::wildcard_imports)]
 use libcypher_parser_sys::*;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -265,6 +265,107 @@ pub struct PatternGraph {
     pub paths: PatternPaths,
 }
 
+/// Direction for AQL graph traversal
+#[derive(Debug, Clone, PartialEq)]
+pub enum TraversalDirection {
+    Outbound,     // OUTBOUND
+    Inbound,      // INBOUND  
+    Any,          // ANY (for bidirectional edges)
+}
+
+/// Index structure for efficient graph traversal
+/// Maps each vertex index to its neighbors in different directions
+#[derive(Debug, Clone)]
+pub struct EdgeIndex {
+    /// Vector of outgoing neighbors for each vertex (indexed by vertex index)
+    #[allow(dead_code)]
+    pub outgoing: Vec<Vec<usize>>,
+    /// Vector of incoming neighbors for each vertex (indexed by vertex index)
+    #[allow(dead_code)]
+    pub incoming: Vec<Vec<usize>>,
+    /// Vector of all undirected neighbors for each vertex (union of incoming and outgoing)
+    pub undirected: Vec<Vec<usize>>,
+}
+
+impl EdgeIndex {
+    /// Create a new EdgeIndex from vertices and edges
+    pub fn new(vertices: &[PatternVertex], edges: &[PatternEdge]) -> Self {
+        let n_vertices = vertices.len();
+        let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); n_vertices];
+        let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); n_vertices];
+        let mut undirected: Vec<Vec<usize>> = vec![Vec::new(); n_vertices];
+
+        // Create mapping from vertex identifier to index
+        let mut id_to_index: HashMap<String, usize> = HashMap::new();
+        for (index, vertex) in vertices.iter().enumerate() {
+            id_to_index.insert(vertex.identifier.clone(), index);
+        }
+
+        // Process each edge to build neighbor lists
+        for edge in edges {
+            let source_idx = match id_to_index.get(&edge.source) {
+                Some(idx) => *idx,
+                None => continue, // Skip edges referencing non-existent vertices
+            };
+            let target_idx = match id_to_index.get(&edge.target) {
+                Some(idx) => *idx,
+                None => continue, // Skip edges referencing non-existent vertices
+            };
+
+            match edge.direction {
+                RelationshipDirection::Outbound => {
+                    // source -> target
+                    outgoing[source_idx].push(target_idx);
+                    incoming[target_idx].push(source_idx);
+                    
+                    // For undirected connectivity, add both directions
+                    undirected[source_idx].push(target_idx);
+                    undirected[target_idx].push(source_idx);
+                }
+                RelationshipDirection::Inbound => {
+                    // target -> source (inbound from source perspective)
+                    outgoing[target_idx].push(source_idx);
+                    incoming[source_idx].push(target_idx);
+                    
+                    // For undirected connectivity, add both directions
+                    undirected[source_idx].push(target_idx);
+                    undirected[target_idx].push(source_idx);
+                }
+                RelationshipDirection::Bidirectional => {
+                    // Both directions
+                    outgoing[source_idx].push(target_idx);
+                    outgoing[target_idx].push(source_idx);
+                    incoming[source_idx].push(target_idx);
+                    incoming[target_idx].push(source_idx);
+                    
+                    // For undirected connectivity, add both directions
+                    undirected[source_idx].push(target_idx);
+                    undirected[target_idx].push(source_idx);
+                }
+            }
+        }
+
+        EdgeIndex {
+            outgoing,
+            incoming,
+            undirected,
+        }
+    }
+}
+
+/// Represents an edge in the spanning tree with direction information
+#[derive(Debug, Clone)]
+pub struct SpanningTreeEdge {
+    /// Index of the source vertex (already visited)
+    pub from_vertex: usize,
+    /// Index of the target vertex (newly discovered)
+    pub to_vertex: usize,
+    /// Reference to the original pattern edge
+    pub edge_index: usize,
+    /// Direction to traverse this edge (OUTBOUND, INBOUND, or ANY)
+    pub traversal_direction: TraversalDirection,
+}
+
 impl PatternGraph {
     /// Creates a new empty pattern graph
     pub fn new() -> Self {
@@ -367,6 +468,133 @@ impl PatternGraph {
             edges,
             paths,
         }
+    }
+
+
+    /// Creates an EdgeIndex for this pattern graph
+    pub fn create_edge_index(&self) -> EdgeIndex {
+        EdgeIndex::new(&self.vertices, &self.edges)
+    }
+
+    /// Check if the pattern graph is connected when viewed as an undirected graph
+    pub fn is_connected(&self) -> bool {
+        let edge_index = self.create_edge_index();
+        
+        // Empty graph is considered connected
+        if self.vertices.is_empty() {
+            return true;
+        }
+
+        // Single vertex is connected
+        if self.vertices.len() == 1 {
+            return true;
+        }
+
+        // Use breadth-first search starting from the first vertex (index 0)
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+
+        // Start BFS from vertex index 0
+        queue.push_back(0);
+        visited.insert(0);
+
+        while let Some(current_vertex_idx) = queue.pop_front() {
+            // Get undirected neighbors of the current vertex
+            for &neighbor_idx in &edge_index.undirected[current_vertex_idx] {
+                if !visited.contains(&neighbor_idx) {
+                    visited.insert(neighbor_idx);
+                    queue.push_back(neighbor_idx);
+                }
+            }
+        }
+
+        // The graph is connected if we visited all vertices
+        visited.len() == self.vertices.len()
+    }
+
+
+    /// Build a spanning tree using breadth-first search from a starting vertex
+    /// Returns a list of edges in the spanning tree in the order they should be traversed
+    /// 
+    /// # Arguments
+    /// * `start_vertex` - Index of the starting vertex for BFS
+    /// 
+    /// # Returns
+    /// * `Result<Vec<SpanningTreeEdge>, String>` - Ordered list of spanning tree edges or error
+    pub fn build_spanning_tree(&self, start_vertex: usize) -> Result<Vec<SpanningTreeEdge>, String> {
+        if start_vertex >= self.vertices.len() {
+            return Err("Start vertex index out of bounds".to_string());
+        }
+
+        let edge_index = self.create_edge_index();
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut spanning_tree_edges = Vec::new();
+
+        // Create mapping from vertex identifier to index
+        let mut id_to_index: HashMap<String, usize> = HashMap::new();
+        for (index, vertex) in self.vertices.iter().enumerate() {
+            id_to_index.insert(vertex.identifier.clone(), index);
+        }
+
+        // Create reverse mapping from vertex pair to edge index and direction info
+        let mut edge_lookup: HashMap<(usize, usize), (usize, TraversalDirection)> = HashMap::new();
+        for (edge_idx, edge) in self.edges.iter().enumerate() {
+            let source_idx = match id_to_index.get(&edge.source) {
+                Some(idx) => *idx,
+                None => continue,
+            };
+            let target_idx = match id_to_index.get(&edge.target) {
+                Some(idx) => *idx,
+                None => continue,
+            };
+
+            match edge.direction {
+                RelationshipDirection::Outbound => {
+                    // source -> target, so traversal is OUTBOUND from source to target
+                    edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Outbound));
+                    // For reverse direction (target to source), traversal is INBOUND
+                    edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Inbound));
+                }
+                RelationshipDirection::Inbound => {
+                    // source <- target, so traversal is INBOUND from target to source
+                    edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Outbound));
+                    // For reverse direction (source to target), traversal is INBOUND  
+                    edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Inbound));
+                }
+                RelationshipDirection::Bidirectional => {
+                    // Both directions are ANY
+                    edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Any));
+                    edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Any));
+                }
+            }
+        }
+
+        // Start BFS from the specified vertex
+        queue.push_back(start_vertex);
+        visited.insert(start_vertex);
+
+        while let Some(current_vertex_idx) = queue.pop_front() {
+            // Explore undirected neighbors
+            for &neighbor_idx in &edge_index.undirected[current_vertex_idx] {
+                if !visited.contains(&neighbor_idx) {
+                    visited.insert(neighbor_idx);
+                    queue.push_back(neighbor_idx);
+
+                    // Find the edge information for this traversal
+                    if let Some((edge_idx, traversal_direction)) = edge_lookup.get(&(current_vertex_idx, neighbor_idx)) {
+                        spanning_tree_edges.push(SpanningTreeEdge {
+                            from_vertex: current_vertex_idx,
+                            to_vertex: neighbor_idx,
+                            edge_index: *edge_idx,
+                            traversal_direction: traversal_direction.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(spanning_tree_edges)
     }
 }
 
