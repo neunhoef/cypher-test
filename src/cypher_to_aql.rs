@@ -578,11 +578,54 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Edge type is required but not specified");
     }
+
+    #[test]
+    fn test_path_identifier_in_return() {
+        use crate::cypher::{ReturnClause, ReturnProjection};
+        
+        // Create a simple pattern graph with a named path
+        let vertices = vec![
+            create_test_vertex("user"),
+            create_test_vertex("friend"),
+        ];
+        let edges = vec![
+            create_test_edge_with_type("user", "friend", RelationshipDirection::Outbound, Some("KNOWS")),
+        ];
+        
+        // Create a pattern graph with a named path
+        let mut paths = crate::pattern_graph::PatternPaths::new();
+        paths.insert("mypath".to_string(), vec![0]); // path includes first edge
+        let pattern_graph = PatternGraph::from_components(vertices, edges, paths);
+        
+        // Create return clause with path identifier
+        let return_clause = ReturnClause {
+            distinct: false,
+            return_star: false,
+            projections: vec![ReturnProjection {
+                expression: "mypath".to_string(),
+                alias: None,
+                is_identifier: true,
+            }],
+        };
+        
+        // Generate complete AQL query
+        let result = generate_complete_aql(&pattern_graph, &return_clause);
+        assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+        
+        let aql_lines = result.unwrap();
+        let query = format_aql_query(&aql_lines);
+        
+        // Verify the query contains path construction
+        assert!(query.contains("FOR user IN vertices"));
+        assert!(query.contains("FOR friend, user_friend IN 1..1 OUTBOUND user._id KNOWS"));
+        assert!(query.contains("RETURN {mypath: {\"vertices\": [user, friend], \"edges\": [user_friend]}}"));
+    }
 }
 
 /// Collects all variable names that are exported from the AQL lines
 /// These are the variables that can be referenced in the RETURN clause
-fn collect_exported_variables(aql_lines: &[AQLLine]) -> Vec<String> {
+/// Also includes path identifiers from the pattern graph
+fn collect_exported_variables(aql_lines: &[AQLLine], pattern_graph: &PatternGraph) -> Vec<String> {
     let mut exported_vars = Vec::new();
     
     for line in aql_lines {
@@ -593,7 +636,68 @@ fn collect_exported_variables(aql_lines: &[AQLLine]) -> Vec<String> {
         }
     }
     
+    // Add path identifiers as exported variables
+    for (path_name, _path_edges) in pattern_graph.paths.iter() {
+        if !exported_vars.contains(path_name) {
+            exported_vars.push(path_name.clone());
+        }
+    }
+    
     exported_vars
+}
+
+/// Generates an AQL expression to construct a path object as JSON
+/// The path object has the structure: {vertices: [...], edges: [...]}
+/// 
+/// # Arguments
+/// * `path_name` - Name of the path identifier
+/// * `pattern_graph` - Pattern graph containing path information
+/// 
+/// # Returns
+/// * `Result<String, String>` - AQL expression or error message
+fn generate_path_expression(path_name: &str, pattern_graph: &PatternGraph) -> Result<String, String> {
+    // Get the edge indices for this path
+    let path_edges = pattern_graph.paths.get(path_name)
+        .ok_or_else(|| format!("Path '{path_name}' not found in pattern graph"))?;
+    
+    if path_edges.is_empty() {
+        return Err(format!("Path '{path_name}' has no edges"));
+    }
+    
+    // Build the vertices array by collecting all vertices along the path
+    let mut vertex_identifiers = Vec::new();
+    let mut seen_vertices = std::collections::HashSet::new();
+    
+    for &edge_index in path_edges {
+        if edge_index >= pattern_graph.edges.len() {
+            return Err(format!("Invalid edge index {edge_index} in path '{path_name}'"));
+        }
+        
+        let edge = &pattern_graph.edges[edge_index];
+        
+        // Add source vertex if not seen
+        if !seen_vertices.contains(&edge.source) {
+            vertex_identifiers.push(edge.source.clone());
+            seen_vertices.insert(edge.source.clone());
+        }
+        
+        // Add target vertex if not seen
+        if !seen_vertices.contains(&edge.target) {
+            vertex_identifiers.push(edge.target.clone());
+            seen_vertices.insert(edge.target.clone());
+        }
+    }
+    
+    // Build the edges array
+    let edge_identifiers: Vec<String> = path_edges.iter()
+        .map(|&edge_index| pattern_graph.edges[edge_index].identifier.clone())
+        .collect();
+    
+    // Generate AQL expression
+    let vertices_array = format!("[{}]", vertex_identifiers.join(", "));
+    let edges_array = format!("[{}]", edge_identifiers.join(", "));
+    
+    Ok(format!("{{\"vertices\": {vertices_array}, \"edges\": {edges_array}}}"))
 }
 
 /// Generates AQL RETURN statement from a RETURN clause
@@ -601,12 +705,13 @@ fn collect_exported_variables(aql_lines: &[AQLLine]) -> Vec<String> {
 pub fn generate_return_clause(
     return_clause: &ReturnClause,
     aql_lines: &[AQLLine],
+    pattern_graph: &PatternGraph,
     indent: usize,
 ) -> Result<Vec<AQLLine>, String> {
     let mut result = Vec::new();
     
     // Collect all exported variables from the query so far
-    let exported_vars = collect_exported_variables(aql_lines);
+    let exported_vars = collect_exported_variables(aql_lines, pattern_graph);
     
     if return_clause.return_star {
         // Handle RETURN * - return all exported variables
@@ -615,7 +720,7 @@ pub fn generate_return_clause(
         return Err("RETURN clause must specify either * or at least one projection".to_string());
     } else {
         // Handle specific projections
-        result.push(generate_return_projections(&return_clause.projections, &exported_vars, return_clause.distinct, indent)?);
+        result.push(generate_return_projections(&return_clause.projections, &exported_vars, pattern_graph, return_clause.distinct, indent)?);
     }
     
     Ok(result)
@@ -649,6 +754,7 @@ fn generate_return_star(exported_vars: &[String], distinct: bool, indent: usize)
 fn generate_return_projections(
     projections: &[ReturnProjection],
     exported_vars: &[String],
+    pattern_graph: &PatternGraph,
     distinct: bool,
     indent: usize,
 ) -> Result<AQLLine, String> {
@@ -670,11 +776,20 @@ fn generate_return_projections(
             ));
         }
         
-        // Use abbreviated syntax when column name equals expression
-        let json_property = if column_name == &projection.expression {
+        // Check if this is a path identifier
+        let expression_part = if projection.is_identifier && pattern_graph.paths.get(&projection.expression).is_some() {
+            // This is a path identifier - generate path expression
+            generate_path_expression(&projection.expression, pattern_graph)?
+        } else {
+            // Regular variable or expression
+            projection.expression.clone()
+        };
+        
+        // Use abbreviated syntax when column name equals original expression and it's not a path
+        let json_property = if column_name == &projection.expression && pattern_graph.paths.get(&projection.expression).is_none() {
             column_name.clone()
         } else {
-            format!("{}: {}", column_name, projection.expression)
+            format!("{column_name}: {expression_part}")
         };
         json_properties.push(json_property);
     }
@@ -697,7 +812,7 @@ pub fn generate_complete_aql(
     let (mut aql_lines, current_indent) = match_to_aql(pattern_graph)?;
     
     // Then generate the RETURN part using the current indentation level
-    let return_lines = generate_return_clause(return_clause, &aql_lines, current_indent)?;
+    let return_lines = generate_return_clause(return_clause, &aql_lines, pattern_graph, current_indent)?;
     aql_lines.extend(return_lines);
     
     Ok(aql_lines)
