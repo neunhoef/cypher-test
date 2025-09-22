@@ -287,7 +287,7 @@ mod tests {
 
     fn create_test_edge(source: &str, target: &str, direction: RelationshipDirection) -> PatternEdge {
         PatternEdge {
-            identifier: format!("{}-{}", source, target),
+            identifier: format!("{}_{}", source, target),
             source: source.to_string(),
             target: target.to_string(),
             rel_type: None,
