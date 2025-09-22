@@ -184,10 +184,13 @@ impl std::fmt::Display for GraphError {
 
 impl std::error::Error for GraphError {}
 
+/// Type alias for the return value of make_match_graph
+pub type MatchGraphResult = (Vec<PatternVertex>, Vec<PatternEdge>, HashMap<String, Vec<usize>>);
+
 /// Creates a graph representation from a MATCH statement AST
 pub fn make_match_graph(
     match_node: *const cypher_astnode_t,
-) -> Result<(Vec<PatternVertex>, Vec<PatternEdge>), GraphError> {
+) -> Result<MatchGraphResult, GraphError> {
     if match_node.is_null() {
         return Err(GraphError::InvalidAstNode);
     }
@@ -202,12 +205,14 @@ pub fn make_match_graph(
     let mut edges = Vec::new();
     let mut node_counter = 0;
     let mut rel_counter = 0;
+    let mut path_counter = 1;
+    let mut path_edge_mapping = HashMap::new();
 
     // Get the pattern from the MATCH clause
     // MATCH clause typically has the pattern as its first child
     let n_children = unsafe { cypher_astnode_nchildren(match_node) };
     if n_children == 0 {
-        return Ok((vertices, edges));
+        return Ok((vertices, edges, path_edge_mapping));
     }
 
     let pattern = unsafe { cypher_astnode_get_child(match_node, 0) };
@@ -216,9 +221,9 @@ pub fn make_match_graph(
     }
 
     // Process the pattern
-    process_pattern(pattern, &mut vertices, &mut edges, &mut node_counter, &mut rel_counter)?;
+    process_pattern(pattern, &mut vertices, &mut edges, &mut node_counter, &mut rel_counter, &mut path_counter, &mut path_edge_mapping)?;
 
-    Ok((vertices, edges))
+    Ok((vertices, edges, path_edge_mapping))
 }
 
 /// Processes a pattern node and extracts vertices and edges
@@ -228,6 +233,8 @@ fn process_pattern(
     edges: &mut Vec<PatternEdge>,
     node_counter: &mut u32,
     rel_counter: &mut usize,
+    path_counter: &mut usize,
+    path_edge_mapping: &mut HashMap<String, Vec<usize>>,
 ) -> Result<(), GraphError> {
     if pattern.is_null() {
         return Err(GraphError::InvalidAstNode);
@@ -243,20 +250,52 @@ fn process_pattern(
         let n_children = unsafe { cypher_astnode_nchildren(pattern) };
         for i in 0..n_children {
             let child = unsafe { cypher_astnode_get_child(pattern, i) };
-            process_pattern(child, vertices, edges, node_counter, rel_counter)?;
+            process_pattern(child, vertices, edges, node_counter, rel_counter, path_counter, path_edge_mapping)?;
         }
     } else if pattern_type == cypher_named_path {
-        // Named path - get the actual path from the second child
+        // Named path - get the path name from the first child and actual path from the second child
         let n_children = unsafe { cypher_astnode_nchildren(pattern) };
         if n_children >= 2 {
+            let path_name_node = unsafe { cypher_astnode_get_child(pattern, 0) };
             let path = unsafe { cypher_astnode_get_child(pattern, 1) };
+            
+            // Extract the path name
+            let path_name = extract_identifier(path_name_node).unwrap_or_else(|| format!("path{path_counter}"));
+            *path_counter += 1;
+            
+            // Process the pattern path and collect edge indices
+            let edges_start_index = edges.len();
             process_pattern_path(path, vertices, edges, node_counter, rel_counter)?;
+            let edges_end_index = edges.len();
+            
+            // Map the edges to this path name
+            let edge_indices: Vec<usize> = (edges_start_index..edges_end_index).collect();
+            path_edge_mapping.insert(path_name, edge_indices);
         }
     } else if pattern_type == cypher_pattern_path {
+        // Anonymous path - invent a name
+        let path_name = format!("path{path_counter}");
+        *path_counter += 1;
+        
+        let edges_start_index = edges.len();
         process_pattern_path(pattern, vertices, edges, node_counter, rel_counter)?;
+        let edges_end_index = edges.len();
+        
+        // Map the edges to this path name
+        let edge_indices: Vec<usize> = (edges_start_index..edges_end_index).collect();
+        path_edge_mapping.insert(path_name, edge_indices);
     } else {
-        // Try to process as pattern path anyway
+        // Try to process as pattern path anyway with invented name
+        let path_name = format!("path{path_counter}");
+        *path_counter += 1;
+        
+        let edges_start_index = edges.len();
         process_pattern_path(pattern, vertices, edges, node_counter, rel_counter)?;
+        let edges_end_index = edges.len();
+        
+        // Map the edges to this path name
+        let edge_indices: Vec<usize> = (edges_start_index..edges_end_index).collect();
+        path_edge_mapping.insert(path_name, edge_indices);
     }
 
     Ok(())
@@ -1477,11 +1516,12 @@ mod tests {
                         let match_node = find_match_clause(root);
                         if let Some(match_clause) = match_node {
                             match make_match_graph(match_clause) {
-                                Ok((vertices, edges)) => {
+                                Ok((vertices, edges, path_mapping)) => {
                                     println!(
-                                        "Graph created successfully: {} vertices, {} edges",
+                                        "Graph created successfully: {} vertices, {} edges, {} paths",
                                         vertices.len(),
-                                        edges.len()
+                                        edges.len(),
+                                        path_mapping.len()
                                     );
                                     // Basic validation
                                     assert!(
@@ -1515,11 +1555,12 @@ mod tests {
                     let root = unsafe { cypher_parse_result_get_root(result, 0) };
                     if let Some(match_clause) = find_match_clause(root) {
                         match make_match_graph(match_clause) {
-                            Ok((vertices, edges)) => {
+                            Ok((vertices, edges, path_mapping)) => {
                                 println!(
-                                    "Relationship graph: {} vertices, {} edges",
+                                    "Relationship graph: {} vertices, {} edges, {} paths",
                                     vertices.len(),
-                                    edges.len()
+                                    edges.len(),
+                                    path_mapping.len()
                                 );
                                 // Should have at least 2 vertices and 1 edge
                                 assert!(
@@ -1607,7 +1648,7 @@ mod tests {
     // Helper function to parse query and extract match graph
     fn parse_and_extract_graph(
         query: &str,
-    ) -> Result<(Vec<PatternVertex>, Vec<PatternEdge>), Box<dyn std::error::Error>> {
+    ) -> Result<MatchGraphResult, Box<dyn std::error::Error>> {
         let result = parse_cypher_query(query);
         if result.is_null() {
             return Err("Failed to parse query".into());
@@ -1805,7 +1846,7 @@ mod tests {
         // Test 1: Simple node without identifier
         let result = parse_and_extract_graph("MATCH () RETURN *");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 1);
         assert_eq!(edges.len(), 0);
         assert!(vertices[0].identifier.starts_with("n_"));
@@ -1815,7 +1856,7 @@ mod tests {
         // Test 2: Node with identifier
         let result = parse_and_extract_graph("MATCH (person) RETURN person");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 1);
         assert_eq!(edges.len(), 0);
         assert_eq!(vertices[0].identifier, "person");
@@ -1824,7 +1865,7 @@ mod tests {
         // Test 3: Node with label
         let result = parse_and_extract_graph("MATCH (n:Person) RETURN n");
         assert!(result.is_ok());
-        let (vertices, _edges) = result.unwrap();
+        let (vertices, _edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 1);
         assert_eq!(vertices[0].identifier, "n");
         assert_eq!(vertices[0].label, Some("Person".to_string()));
@@ -1832,7 +1873,7 @@ mod tests {
         // Test 4: Node with identifier and label
         let result = parse_and_extract_graph("MATCH (person:Person) RETURN person");
         assert!(result.is_ok());
-        let (vertices, _edges) = result.unwrap();
+        let (vertices, _edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 1);
         assert_eq!(vertices[0].identifier, "person");
         assert_eq!(vertices[0].label, Some("Person".to_string()));
@@ -1841,7 +1882,7 @@ mod tests {
         let result =
             parse_and_extract_graph("MATCH (a), (b:Label), (c:AnotherLabel) RETURN a, b, c");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 0);
 
@@ -1860,7 +1901,7 @@ mod tests {
         // Test 1: Simple relationship without type
         let result = parse_and_extract_graph("MATCH (a)-[r]->(b) RETURN a, r, b");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
 
@@ -1872,7 +1913,7 @@ mod tests {
         // Test 2: Relationship with type
         let result = parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b) RETURN a, b");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
 
@@ -1882,7 +1923,7 @@ mod tests {
         // Test 3: Relationship with identifier and type
         let result = parse_and_extract_graph("MATCH (a)-[r:KNOWS]->(b) RETURN a, r, b");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
 
@@ -1892,7 +1933,7 @@ mod tests {
         // Test 4: Undirected relationship
         let result = parse_and_extract_graph("MATCH (a)-[r:CONNECTED]-(b) RETURN a, r, b");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
 
@@ -1904,7 +1945,7 @@ mod tests {
             "MATCH (a)-[:FOLLOWS]->(b), (c)-[:LIKES]->(d) RETURN a, b, c, d",
         );
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 4);
         assert_eq!(edges.len(), 2);
 
@@ -1923,7 +1964,7 @@ mod tests {
         // Test 1: Short path (2 nodes, 1 edge)
         let result = parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b) RETURN a, b");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
         assert!(is_path_graph(&vertices, &edges));
@@ -1932,7 +1973,7 @@ mod tests {
         let result =
             parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b)-[:WORKS_AT]->(c) RETURN a, b, c");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 2);
         assert!(is_path_graph(&vertices, &edges));
@@ -1941,7 +1982,7 @@ mod tests {
         let result =
             parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d) RETURN a, b, c, d");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 4);
         assert_eq!(edges.len(), 3);
         assert!(is_path_graph(&vertices, &edges));
@@ -1951,7 +1992,7 @@ mod tests {
             "MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d)-[:R4]->(e) RETURN a, b, c, d, e",
         );
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 5);
         assert_eq!(edges.len(), 4);
         assert!(is_path_graph(&vertices, &edges));
@@ -1961,7 +2002,7 @@ mod tests {
             "MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d)-[:R4]->(e)-[:R5]->(f) RETURN a, b, c, d, e, f",
         );
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 6);
         assert_eq!(edges.len(), 5);
         assert!(is_path_graph(&vertices, &edges));
@@ -1972,7 +2013,7 @@ mod tests {
         // Test 1: Two separate nodes
         let result = parse_and_extract_graph("MATCH (a), (b) RETURN a, b");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 0);
 
@@ -1980,7 +2021,7 @@ mod tests {
         let result =
             parse_and_extract_graph("MATCH (a)-[:KNOWS]->(b), (c)-[:LIKES]->(d) RETURN a, b, c, d");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 4);
         assert_eq!(edges.len(), 2);
 
@@ -1988,7 +2029,7 @@ mod tests {
         let result =
             parse_and_extract_graph("MATCH (isolated), (a)-[:CONNECTS]->(b) RETURN isolated, a, b");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 1);
 
@@ -1997,7 +2038,7 @@ mod tests {
             "MATCH (single), (a)-[:R1]->(b), (c)-[:R2]->(d)-[:R3]->(e) RETURN *",
         );
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 6); // single + a,b + c,d,e
         assert_eq!(edges.len(), 3); // 0 + 1 + 2
 
@@ -2006,7 +2047,7 @@ mod tests {
             "MATCH (a)-[:R1]->(b)-[:R2]->(c), (d)-[:R3]->(e), (f) RETURN *",
         );
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 6); // a,b,c + d,e + f
         assert_eq!(edges.len(), 3); // 2 + 1 + 0
     }
@@ -2018,7 +2059,7 @@ mod tests {
             "MATCH (person:Person)-[:KNOWS]->(friend) RETURN person, friend",
         );
         assert!(result.is_ok());
-        let (vertices, _edges) = result.unwrap();
+        let (vertices, _edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 2);
 
         let person = find_vertex_by_id(&vertices, "person").unwrap();
@@ -2032,7 +2073,7 @@ mod tests {
             "MATCH (p:Person)-[:WORKS_AT]->(c:Company)-[:LOCATED_IN]->(city:City) RETURN p, c, city",
         );
         assert!(result.is_ok());
-        let (vertices, _edges) = result.unwrap();
+        let (vertices, _edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 3);
 
         assert_eq!(count_vertices_with_label(&vertices, "Person"), 1);
@@ -2042,7 +2083,7 @@ mod tests {
         // Test 3: Mixed typed and untyped relationships
         let result = parse_and_extract_graph("MATCH (a)-[:TYPED_REL]->(b)-[]->(c) RETURN a, b, c");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 2);
 
@@ -2056,7 +2097,7 @@ mod tests {
             "MATCH (p1:Person)-[:KNOWS]-(p2:Person), (c:Company)-[]->(l) RETURN *",
         );
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 4);
         assert_eq!(edges.len(), 2);
 
@@ -2069,7 +2110,7 @@ mod tests {
         // Test 1: Simple path topology
         let result = parse_and_extract_graph("MATCH (a)-[:R1]->(b)-[:R2]->(c) RETURN a, b, c");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert!(is_path_graph(&vertices, &edges));
         assert!(is_tree_graph(&vertices, &edges));
         assert!(!has_cycle(&vertices, &edges));
@@ -2140,7 +2181,7 @@ mod tests {
         let result =
             parse_and_extract_graph("MATCH (a)-[:R1]->(b), (c)-[:R2]->(d) RETURN a, b, c, d");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert!(!is_path_graph(&vertices, &edges)); // Not connected as single path
         assert!(!is_tree_graph(&vertices, &edges)); // Not connected as single tree
     }
@@ -2150,7 +2191,7 @@ mod tests {
         // Test 1: Nodes without identifiers get auto-generated ones
         let result = parse_and_extract_graph("MATCH ()-[]-() RETURN *");
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 2);
         assert_eq!(edges.len(), 1);
 
@@ -2162,7 +2203,7 @@ mod tests {
         // Test 2: Mix of explicit and auto-generated identifiers
         let result = parse_and_extract_graph("MATCH (named)-[]-() RETURN named");
         assert!(result.is_ok());
-        let (vertices, _edges) = result.unwrap();
+        let (vertices, _edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 2);
 
         let named = find_vertex_by_id(&vertices, "named");
@@ -2180,7 +2221,7 @@ mod tests {
             "MATCH (user:User)-[:FOLLOWS]->(friend:User)-[:POSTS]->(content:Post) RETURN user, friend, content",
         );
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 2);
         assert!(is_path_graph(&vertices, &edges));
@@ -2190,7 +2231,7 @@ mod tests {
             "MATCH (emp:Employee)-[:REPORTS_TO]->(mgr:Manager)-[:WORKS_FOR]->(dept:Department) RETURN emp, mgr, dept",
         );
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 2);
 
@@ -2203,7 +2244,7 @@ mod tests {
             "MATCH (app:Application)-[:RUNS_ON]->(server:Server)-[:HOSTS]->(db:Database) RETURN app, server, db",
         );
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 3);
         assert_eq!(edges.len(), 2);
 
@@ -2220,7 +2261,7 @@ mod tests {
             "MATCH (supplier:Supplier)-[:SUPPLIES]->(manufacturer:Manufacturer)-[:PRODUCES]->(product:Product)-[:SOLD_TO]->(customer:Customer) RETURN *",
         );
         assert!(result.is_ok());
-        let (vertices, edges) = result.unwrap();
+        let (vertices, edges, _path_mapping) = result.unwrap();
         assert_eq!(vertices.len(), 4);
         assert_eq!(edges.len(), 3);
         assert!(is_path_graph(&vertices, &edges));
@@ -2258,7 +2299,7 @@ mod tests {
         let result = parse_and_extract_graph(
             "MATCH (p:Person {name: 'Alice'})-[:KNOWS {since: 2020}]->(f:Friend) RETURN p, f",
         );
-        if let Ok((vertices, edges)) = result {
+        if let Ok((vertices, edges, _path_mapping)) = result {
             print_pattern_graph(&vertices, &edges);
             // This should not panic
         }
@@ -2617,7 +2658,7 @@ mod tests {
             if n_errors == 0 {
                 if let Some(match_clause) = find_match_clause_from_result(result) {
                     match make_match_graph(match_clause) {
-                        Ok((vertices, edges)) => {
+                        Ok((vertices, edges, _path_mapping)) => {
                             assert_eq!(vertices.len(), 2);
                             assert_eq!(edges.len(), 1);
 
@@ -2647,7 +2688,7 @@ mod tests {
             if n_errors == 0 {
                 if let Some(match_clause) = find_match_clause_from_result(result) {
                     match make_match_graph(match_clause) {
-                        Ok((vertices, edges)) => {
+                        Ok((vertices, edges, _path_mapping)) => {
                             assert_eq!(vertices.len(), 2);
                             assert_eq!(edges.len(), 1);
 
@@ -2677,7 +2718,7 @@ mod tests {
             if n_errors == 0 {
                 if let Some(match_clause) = find_match_clause_from_result(result) {
                     match make_match_graph(match_clause) {
-                        Ok((vertices, edges)) => {
+                        Ok((vertices, edges, _path_mapping)) => {
                             assert_eq!(vertices.len(), 2);
                             assert_eq!(edges.len(), 1);
 
@@ -2707,7 +2748,7 @@ mod tests {
             if n_errors == 0 {
                 if let Some(match_clause) = find_match_clause_from_result(result) {
                     match make_match_graph(match_clause) {
-                        Ok((vertices, edges)) => {
+                        Ok((vertices, edges, _path_mapping)) => {
                             assert_eq!(vertices.len(), 5);
                             assert_eq!(edges.len(), 3);
 
@@ -2760,5 +2801,95 @@ mod tests {
         }
 
         None
+    }
+
+    #[test]
+    fn test_path_name_tracking() {
+        // Test 1: Named path should retain the name
+        let result = parse_and_extract_graph("MATCH my_path = (a)-[r]->(b) RETURN a, b");
+        assert!(result.is_ok());
+        let (vertices, edges, path_mapping) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(path_mapping.len(), 1);
+        assert!(path_mapping.contains_key("my_path"));
+        assert_eq!(path_mapping["my_path"], vec![0]); // First edge should have index 0
+
+        // Test 2: Anonymous path should get invented name
+        let result = parse_and_extract_graph("MATCH (a)-[r]->(b) RETURN a, b");
+        assert!(result.is_ok());
+        let (vertices, edges, path_mapping) = result.unwrap();
+        assert_eq!(vertices.len(), 2);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(path_mapping.len(), 1);
+        assert!(path_mapping.contains_key("path1"));
+        assert_eq!(path_mapping["path1"], vec![0]);
+
+        // Test 3: Multiple paths should get different names
+        let result = parse_and_extract_graph("MATCH (a)-[r1]->(b), (c)-[r2]->(d) RETURN a, b, c, d");
+        assert!(result.is_ok());
+        let (vertices, edges, path_mapping) = result.unwrap();
+        assert_eq!(vertices.len(), 4);
+        assert_eq!(edges.len(), 2);
+        assert_eq!(path_mapping.len(), 2);
+        assert!(path_mapping.contains_key("path1"));
+        assert!(path_mapping.contains_key("path2"));
+        // Each path should contain one edge
+        assert_eq!(path_mapping["path1"].len(), 1);
+        assert_eq!(path_mapping["path2"].len(), 1);
+
+        // Test 4: Mix of named and anonymous paths
+        let result = parse_and_extract_graph("MATCH named_path = (a)-[r1]->(b), (c)-[r2]->(d) RETURN a, b, c, d");
+        assert!(result.is_ok());
+        let (vertices, edges, path_mapping) = result.unwrap();
+        assert_eq!(vertices.len(), 4);
+        assert_eq!(edges.len(), 2);
+        assert_eq!(path_mapping.len(), 2);
+        assert!(path_mapping.contains_key("named_path"));
+        assert!(path_mapping.contains_key("path2")); // Second path gets path2 since counter continues
+
+        // Test 5: Complex path with multiple edges
+        let result = parse_and_extract_graph("MATCH long_path = (a)-[r1]->(b)-[r2]->(c) RETURN a, b, c");
+        assert!(result.is_ok());
+        let (vertices, edges, path_mapping) = result.unwrap();
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(edges.len(), 2);
+        assert_eq!(path_mapping.len(), 1);
+        assert!(path_mapping.contains_key("long_path"));
+        assert_eq!(path_mapping["long_path"], vec![0, 1]); // Should contain both edges
+    }
+
+    #[test]
+    fn test_path_edge_mapping_correctness() {
+        // Test that edge indices in path mapping are correct
+        let result = parse_and_extract_graph("MATCH path1 = (a)-[r1:TYPE1]->(b), path2 = (c)-[r2:TYPE2]->(d) RETURN a, b, c, d");
+        assert!(result.is_ok());
+        let (vertices, edges, path_mapping) = result.unwrap();
+        assert_eq!(vertices.len(), 4);
+        assert_eq!(edges.len(), 2);
+        assert_eq!(path_mapping.len(), 2);
+
+        // Check that the edge indices are valid
+        for (path_name, edge_indices) in &path_mapping {
+            for &edge_idx in edge_indices {
+                assert!(edge_idx < edges.len(), "Edge index {} is out of bounds for path {}", edge_idx, path_name);
+            }
+        }
+
+        // Verify specific edge types
+        let path1_edges: Vec<&PatternEdge> = path_mapping["path1"].iter().map(|&i| &edges[i]).collect();
+        let path2_edges: Vec<&PatternEdge> = path_mapping["path2"].iter().map(|&i| &edges[i]).collect();
+        
+        assert_eq!(path1_edges.len(), 1);
+        assert_eq!(path2_edges.len(), 1);
+        
+        // One should have TYPE1 and the other TYPE2
+        let has_type1 = path1_edges.iter().any(|e| e.rel_type == Some("TYPE1".to_string())) || 
+                       path2_edges.iter().any(|e| e.rel_type == Some("TYPE1".to_string()));
+        let has_type2 = path1_edges.iter().any(|e| e.rel_type == Some("TYPE2".to_string())) || 
+                       path2_edges.iter().any(|e| e.rel_type == Some("TYPE2".to_string()));
+        
+        assert!(has_type1, "Should have an edge with TYPE1");
+        assert!(has_type2, "Should have an edge with TYPE2");
     }
 }

@@ -11,7 +11,7 @@ use libcypher_parser_sys::*;
 // Include our modules
 mod cypher;
 mod cypher_to_aql;
-use cypher::{GraphError, find_match_and_return_clauses, make_match_graph, print_pattern_graph, parse_return_clause};
+use cypher::{GraphError, find_match_and_return_clauses, make_match_graph, print_pattern_graph, parse_return_clause, RelationshipDirection};
 use cypher_to_aql::{EdgeIndex, is_connected, generate_complete_aql, format_aql_query};
 
 fn main() {
@@ -120,13 +120,49 @@ fn main() {
 
                 // Create pattern graph from MATCH clause
                 match make_match_graph(match_node) {
-                    Ok((vertices, edges)) => {
+                    Ok((vertices, edges, path_edge_mapping)) => {
                         println!(
-                            "Successfully created pattern graph with {} vertices and {} edges",
+                            "Successfully created pattern graph with {} vertices, {} edges, and {} paths",
                             vertices.len(),
-                            edges.len()
+                            edges.len(),
+                            path_edge_mapping.len()
                         );
+                        
                         print_pattern_graph(&vertices, &edges);
+
+                        // Print detailed path information after the pattern graph
+                        if !path_edge_mapping.is_empty() {
+                            println!("\n=== Pattern Paths ===");
+                            for (path_name, edge_indices) in &path_edge_mapping {
+                                println!("\nPath '{path_name}':");
+                                if edge_indices.is_empty() {
+                                    println!("  (no edges)");
+                                } else {
+                                    for &edge_idx in edge_indices {
+                                        if edge_idx < edges.len() {
+                                            let edge = &edges[edge_idx];
+                                            let edge_label = if !edge.identifier.is_empty() {
+                                                format!(" {}", edge.identifier)
+                                            } else {
+                                                String::new()
+                                            };
+                                            let rel_type = edge.rel_type.as_ref().map_or("", |t| t.as_str());
+                                            let direction_arrow = match edge.direction {
+                                                RelationshipDirection::Outbound => "->",
+                                                RelationshipDirection::Inbound => "<-",
+                                                RelationshipDirection::Bidirectional => "<->",
+                                            };
+                                            
+                                            if edge.direction == RelationshipDirection::Inbound {
+                                                println!("  {} <-[{}:{}]- {}", edge.target, edge_label, rel_type, edge.source);
+                                            } else {
+                                                println!("  {} -[{}:{}]{} {}", edge.source, edge_label, rel_type, direction_arrow, edge.target);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         // Parse the RETURN clause
                         match parse_return_clause(return_node) {
