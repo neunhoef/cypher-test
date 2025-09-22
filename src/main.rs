@@ -120,27 +120,27 @@ fn main() {
 
                 // Create pattern graph from MATCH clause
                 match make_match_graph(match_node) {
-                    Ok((vertices, edges, path_edge_mapping)) => {
+                    Ok(graph) => {
                         println!(
                             "Successfully created pattern graph with {} vertices, {} edges, and {} paths",
-                            vertices.len(),
-                            edges.len(),
-                            path_edge_mapping.len()
+                            graph.vertex_count(),
+                            graph.edge_count(),
+                            graph.path_count()
                         );
                         
-                        print_pattern_graph(&vertices, &edges);
+                        print_pattern_graph(&graph);
 
                         // Print detailed path information after the pattern graph
-                        if !path_edge_mapping.is_empty() {
+                        if !graph.paths.is_empty() {
                             println!("\n=== Pattern Paths ===");
-                            for (path_name, edge_indices) in &path_edge_mapping {
+                            for (path_name, edge_indices) in graph.paths.iter() {
                                 println!("\nPath '{path_name}':");
                                 if edge_indices.is_empty() {
                                     println!("  (no edges)");
                                 } else {
                                     for &edge_idx in edge_indices {
-                                        if edge_idx < edges.len() {
-                                            let edge = &edges[edge_idx];
+                                        if edge_idx < graph.edges.len() {
+                                            let edge = &graph.edges[edge_idx];
                                             let edge_label = if !edge.identifier.is_empty() {
                                                 format!(" {}", edge.identifier)
                                             } else {
@@ -186,8 +186,8 @@ fn main() {
                                 }
 
                                 // Check pattern graph connectivity
-                                let edge_index = EdgeIndex::new(&vertices, &edges);
-                                let connected = is_connected(&vertices, &edge_index);
+                                let edge_index = EdgeIndex::new(&graph.vertices, &graph.edges);
+                                let connected = is_connected(&graph.vertices, &edge_index);
                                 println!(
                                     "\n=== Pattern Graph Analysis ===\n\
                                      Graph connectivity: {}",
@@ -203,7 +203,7 @@ fn main() {
                                 }
 
                                 // Generate complete AQL query with MATCH and RETURN
-                                match generate_complete_aql(&vertices, &edges, &edge_index, &return_clause) {
+                                match generate_complete_aql(&graph.vertices, &graph.edges, &edge_index, &return_clause) {
                                     Ok(aql_lines) => {
                                         println!("\n=== AQL Translation ===");
                                         println!("{}", format_aql_query(&aql_lines));
