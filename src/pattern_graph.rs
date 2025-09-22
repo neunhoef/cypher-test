@@ -607,6 +607,22 @@ fn process_pattern(
     Ok(())
 }
 
+/// Helper function to ensure a vertex exists in the vertices collection
+/// Returns the identifier of the vertex (either found or newly created)
+fn ensure_vertex_exists(
+    vertices: &mut Vec<PatternVertex>,
+    vertex: PatternVertex,
+) -> String {
+    let identifier = vertex.identifier.clone();
+    
+    // Check if vertex with this identifier already exists
+    if !vertices.iter().any(|v| v.identifier == identifier) {
+        vertices.push(vertex);
+    }
+    
+    identifier
+}
+
 /// Processes a pattern path and extracts alternating nodes and relationships
 fn process_pattern_path(
     path: *const cypher_astnode_t,
@@ -632,8 +648,7 @@ fn process_pattern_path(
 
         if child_type == cypher_node_pattern {
             let vertex = process_node_pattern(child, node_counter)?;
-            current_node_id = Some(vertex.identifier.clone());
-            vertices.push(vertex);
+            current_node_id = Some(ensure_vertex_exists(vertices, vertex));
             i += 1;
         } else if child_type == cypher_rel_pattern {
             // Need current node and next node for relationship
@@ -652,8 +667,7 @@ fn process_pattern_path(
                             process_relationship_pattern(child, source_id.clone(), target_id, rel_counter)?;
                         edges.push(edge);
 
-                        current_node_id = Some(target_vertex.identifier.clone());
-                        vertices.push(target_vertex);
+                        current_node_id = Some(ensure_vertex_exists(vertices, target_vertex));
 
                         // Skip the next node since we processed it here
                         i += 2; // Skip both the relationship and the target node
@@ -1498,5 +1512,180 @@ mod tests {
         // Test the helper function directly with null input
         let result = extract_expression_value(ptr::null());
         assert_eq!(result, None);
+    }
+
+    // Helper function to find MATCH clause in AST recursively
+    fn find_match_clause(node: *const cypher_astnode_t) -> Option<*const cypher_astnode_t> {
+        if node.is_null() {
+            return None;
+        }
+
+        let node_type = unsafe { cypher_astnode_type(node) };
+        let cypher_match = unsafe { CYPHER_AST_MATCH };
+        if node_type == cypher_match {
+            return Some(node);
+        }
+
+        // Recursively search children
+        let n_children = unsafe { cypher_astnode_nchildren(node) };
+        for i in 0..n_children {
+            let child = unsafe { cypher_astnode_get_child(node, i) };
+            if let Some(match_node) = find_match_clause(child) {
+                return Some(match_node);
+            }
+        }
+
+        None
+    }
+
+    /// Helper function to parse a Cypher query and extract the match graph
+    fn parse_and_extract_match_graph(query: &str) -> Result<PatternGraph, GraphError> {
+        let result = parse_cypher_query(query);
+        
+        if result.is_null() {
+            cleanup_parse_result(result);
+            return Err(GraphError::InvalidAstNode);
+        }
+
+        let n_errors = unsafe { cypher_parse_result_nerrors(result) };
+        if n_errors > 0 {
+            cleanup_parse_result(result);
+            return Err(GraphError::InvalidAstNode);
+        }
+
+        let n_roots = unsafe { cypher_parse_result_nroots(result) };
+        if n_roots == 0 {
+            cleanup_parse_result(result);
+            return Err(GraphError::InvalidAstNode);
+        }
+
+        let root = unsafe { cypher_parse_result_get_root(result, 0) };
+        
+        // Find the MATCH clause within the AST
+        let match_clause = find_match_clause(root);
+        
+        let graph_result = match match_clause {
+            Some(match_node) => make_match_graph(match_node),
+            None => Err(GraphError::UnsupportedPattern),
+        };
+        
+        cleanup_parse_result(result);
+        graph_result
+    }
+
+    #[test]
+    fn test_connectivity_with_shared_vertices_regression() {
+        // Regression test for the duplicate vertex issue
+        // This query should create a connected graph with 3 vertices, not 4
+        // The vertex v1 appears in both paths p1 and p2 and should be deduplicated
+        let query = "MATCH p1 = (v1) -[e]-> (v2), p2 = (v1) -[f]-> (v3)";
+        
+        let graph_result = parse_and_extract_match_graph(query);
+        assert!(graph_result.is_ok(), "Failed to parse query: {:?}", graph_result.err());
+        
+        let graph = graph_result.unwrap();
+        
+        // Verify correct vertex count - should be 3, not 4 (v1 should be deduplicated)
+        assert_eq!(graph.vertices.len(), 3, "Expected 3 vertices, got {}", graph.vertices.len());
+        
+        // Verify we have the expected vertices
+        let vertex_ids: HashSet<String> = graph.vertices.iter().map(|v| v.identifier.clone()).collect();
+        let expected_ids: HashSet<String> = ["v1", "v2", "v3"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(vertex_ids, expected_ids, "Vertex identifiers don't match expected set");
+        
+        // Verify edge count
+        assert_eq!(graph.edges.len(), 2, "Expected 2 edges, got {}", graph.edges.len());
+        
+        // Verify path count
+        assert_eq!(graph.paths.len(), 2, "Expected 2 paths, got {}", graph.paths.len());
+        
+        // Most importantly: verify the graph is connected
+        assert!(graph.is_connected(), "Graph should be connected but connectivity check failed");
+        
+        // Verify the edges connect the right vertices
+        let edge_pairs: HashSet<(String, String)> = graph.edges.iter()
+            .map(|e| (e.source.clone(), e.target.clone()))
+            .collect();
+        let expected_pairs: HashSet<(String, String)> = [
+            ("v1".to_string(), "v2".to_string()),
+            ("v1".to_string(), "v3".to_string())
+        ].iter().cloned().collect();
+        assert_eq!(edge_pairs, expected_pairs, "Edge connections don't match expected pairs");
+    }
+
+    #[test] 
+    fn test_connectivity_multiple_shared_vertices() {
+        // Test a more complex case with multiple shared vertices
+        let query = "MATCH p1 = (a) -[r1]-> (b) -[r2]-> (c), p2 = (a) -[r3]-> (d), p3 = (b) -[r4]-> (e)";
+        
+        let graph_result = parse_and_extract_match_graph(query);
+        assert!(graph_result.is_ok(), "Failed to parse query: {:?}", graph_result.err());
+        
+        let graph = graph_result.unwrap();
+        
+        // Should have 5 unique vertices: a, b, c, d, e
+        assert_eq!(graph.vertices.len(), 5, "Expected 5 vertices, got {}", graph.vertices.len());
+        
+        // Verify we have the expected vertices
+        let vertex_ids: HashSet<String> = graph.vertices.iter().map(|v| v.identifier.clone()).collect();
+        let expected_ids: HashSet<String> = ["a", "b", "c", "d", "e"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(vertex_ids, expected_ids, "Vertex identifiers don't match expected set");
+        
+        // Should have 4 edges
+        assert_eq!(graph.edges.len(), 4, "Expected 4 edges, got {}", graph.edges.len());
+        
+        // Should be connected
+        assert!(graph.is_connected(), "Graph should be connected but connectivity check failed");
+    }
+
+    #[test]
+    fn test_connectivity_single_vertex_multiple_paths() {
+        // Edge case: single vertex appearing in multiple named paths
+        let query = "MATCH p1 = (n), p2 = (n)";
+        
+        let graph_result = parse_and_extract_match_graph(query);
+        assert!(graph_result.is_ok(), "Failed to parse query: {:?}", graph_result.err());
+        
+        let graph = graph_result.unwrap();
+        
+        // Should have only 1 vertex (n should be deduplicated)
+        assert_eq!(graph.vertices.len(), 1, "Expected 1 vertex, got {}", graph.vertices.len());
+        assert_eq!(graph.vertices[0].identifier, "n");
+        
+        // No edges
+        assert_eq!(graph.edges.len(), 0, "Expected 0 edges, got {}", graph.edges.len());
+        
+        // Single vertex is considered connected
+        assert!(graph.is_connected(), "Single vertex graph should be connected");
+    }
+
+    #[test]
+    fn test_connectivity_star_pattern() {
+        // Test a star pattern where one central vertex connects to multiple others
+        let query = "MATCH p1 = (center) -[r1]-> (a), p2 = (center) -[r2]-> (b), p3 = (center) -[r3]-> (c)";
+        
+        let graph_result = parse_and_extract_match_graph(query);
+        assert!(graph_result.is_ok(), "Failed to parse query: {:?}", graph_result.err());
+        
+        let graph = graph_result.unwrap();
+        
+        // Should have 4 unique vertices: center, a, b, c
+        assert_eq!(graph.vertices.len(), 4, "Expected 4 vertices, got {}", graph.vertices.len());
+        
+        // Verify we have the expected vertices
+        let vertex_ids: HashSet<String> = graph.vertices.iter().map(|v| v.identifier.clone()).collect();
+        let expected_ids: HashSet<String> = ["center", "a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(vertex_ids, expected_ids, "Vertex identifiers don't match expected set");
+        
+        // Should have 3 edges
+        assert_eq!(graph.edges.len(), 3, "Expected 3 edges, got {}", graph.edges.len());
+        
+        // Should be connected
+        assert!(graph.is_connected(), "Star pattern graph should be connected");
+        
+        // Verify all edges have 'center' as source
+        for edge in &graph.edges {
+            assert_eq!(edge.source, "center", "All edges should originate from center vertex");
+        }
     }
 }
