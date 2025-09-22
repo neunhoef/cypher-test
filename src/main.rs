@@ -11,7 +11,9 @@ use libcypher_parser_sys::*;
 // Include our modules
 mod cypher;
 mod cypher_to_aql;
-use cypher::{GraphError, find_match_and_return_clauses, make_match_graph, print_pattern_graph, parse_return_clause, RelationshipDirection};
+mod pattern_graph;
+use cypher::{find_match_and_return_clauses, parse_return_clause};
+use pattern_graph::{GraphError, make_match_graph, print_pattern_graph, RelationshipDirection};
 use cypher_to_aql::{generate_complete_aql, format_aql_query};
 
 fn main() {

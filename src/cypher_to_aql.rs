@@ -1,4 +1,5 @@
-use crate::cypher::{PatternVertex, PatternEdge, PatternGraph, ReturnClause, ReturnProjection, TraversalDirection, SpanningTreeEdge};
+use crate::cypher::{ReturnClause, ReturnProjection};
+use crate::pattern_graph::{PatternVertex, PatternEdge, PatternGraph, TraversalDirection, SpanningTreeEdge};
 use std::collections::HashMap;
 use serde_json::Value;
 
@@ -275,7 +276,7 @@ pub fn match_to_aql(pattern_graph: &PatternGraph) -> Result<(Vec<AQLLine>, usize
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use crate::cypher::RelationshipDirection;
+    use crate::pattern_graph::RelationshipDirection;
 
     fn create_test_vertex(id: &str) -> PatternVertex {
         PatternVertex {
@@ -308,7 +309,7 @@ mod tests {
             create_test_edge("a", "b", RelationshipDirection::Outbound),
         ];
 
-        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
         let index = pattern_graph.create_edge_index();
 
         assert_eq!(index.outgoing[0], vec![1usize]);
@@ -327,7 +328,7 @@ mod tests {
             create_test_edge("a", "b", RelationshipDirection::Bidirectional),
         ];
 
-        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
         let index = pattern_graph.create_edge_index();
 
         assert_eq!(index.outgoing[0], vec![1usize]);
@@ -338,14 +339,14 @@ mod tests {
 
     #[test]
     fn test_is_connected_empty_graph() {
-        let pattern_graph = PatternGraph::from_components(vec![], vec![], crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vec![], vec![], crate::pattern_graph::PatternPaths::new());
         assert!(pattern_graph.is_connected());
     }
 
     #[test]
     fn test_is_connected_single_vertex() {
         let vertices = vec![create_test_vertex("a")];
-        let pattern_graph = PatternGraph::from_components(vertices, vec![], crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vertices, vec![], crate::pattern_graph::PatternPaths::new());
         assert!(pattern_graph.is_connected());
     }
 
@@ -358,7 +359,7 @@ mod tests {
         let edges = vec![
             create_test_edge("a", "b", RelationshipDirection::Outbound),
         ];
-        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
         assert!(pattern_graph.is_connected());
     }
 
@@ -368,7 +369,7 @@ mod tests {
             create_test_vertex("a"),
             create_test_vertex("b"),
         ];
-        let pattern_graph = PatternGraph::from_components(vertices, vec![], crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vertices, vec![], crate::pattern_graph::PatternPaths::new());
         assert!(!pattern_graph.is_connected());
     }
 
@@ -383,7 +384,7 @@ mod tests {
             create_test_edge("a", "b", RelationshipDirection::Outbound),
             create_test_edge("b", "c", RelationshipDirection::Outbound),
         ];
-        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
         assert!(pattern_graph.is_connected());
     }
 
@@ -399,7 +400,7 @@ mod tests {
             create_test_edge("a", "b", RelationshipDirection::Outbound),
             create_test_edge("c", "d", RelationshipDirection::Outbound),
         ];
-        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
         assert!(!pattern_graph.is_connected());
     }
 
@@ -432,7 +433,7 @@ mod tests {
             create_test_edge_with_type("a", "b", RelationshipDirection::Outbound, Some("FRIEND")),
             create_test_edge_with_type("b", "c", RelationshipDirection::Outbound, Some("LIKES")),
         ];
-        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
         
         let spanning_tree = pattern_graph.build_spanning_tree(0).unwrap();
         
@@ -453,7 +454,7 @@ mod tests {
         let edges = vec![
             create_test_edge_with_type("a", "b", RelationshipDirection::Bidirectional, Some("CONNECTED")),
         ];
-        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
         
         let spanning_tree = pattern_graph.build_spanning_tree(0).unwrap();
         
@@ -547,7 +548,7 @@ mod tests {
         let edges = vec![
             create_test_edge_with_type("user", "friend", RelationshipDirection::Outbound, Some("FRIEND")),
         ];
-        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::cypher::PatternPaths::new());
+        let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
         
         let (aql_lines, _current_indent) = match_to_aql(&pattern_graph).unwrap();
         
