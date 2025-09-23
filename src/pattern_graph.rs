@@ -146,6 +146,26 @@ impl Default for PatternPaths {
     }
 }
 
+/// Type of identifier in the pattern graph
+#[derive(Debug, Clone, PartialEq)]
+pub enum IdentifierType {
+    /// Identifier refers to a vertex (node)
+    Vertex,
+    /// Identifier refers to an edge (relationship)
+    Edge,
+    /// Identifier refers to a path
+    Path,
+}
+
+/// Information about an identifier in the pattern graph
+#[derive(Debug, Clone, PartialEq)]
+pub struct IdentifierInfo {
+    /// Type of the identifier (vertex, edge, or path)
+    pub identifier_type: IdentifierType,
+    /// Index in the corresponding collection (vertices, edges, or paths)
+    pub index: usize,
+}
+
 /// Represents a complete pattern graph with vertices, edges, and named paths
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternGraph {
@@ -155,6 +175,14 @@ pub struct PatternGraph {
     pub edges: Vec<PatternEdge>,
     /// Named pattern paths mapping to edge indices
     pub paths: PatternPaths,
+    /// Mapping from identifier names to their type and index
+    identifier_map: HashMap<String, IdentifierInfo>,
+    /// Counter for automatically generated vertex identifiers
+    vertex_counter: u32,
+    /// Counter for automatically generated edge identifiers
+    edge_counter: u32,
+    /// Counter for automatically generated path identifiers
+    path_counter: u32,
 }
 
 /// Direction for AQL graph traversal
@@ -265,6 +293,10 @@ impl PatternGraph {
             vertices: Vec::new(),
             edges: Vec::new(),
             paths: PatternPaths::new(),
+            identifier_map: HashMap::new(),
+            vertex_counter: 0,
+            edge_counter: 0,
+            path_counter: 0,
         }
     }
 
@@ -274,29 +306,218 @@ impl PatternGraph {
         edges: Vec<PatternEdge>,
         paths: PatternPaths,
     ) -> Self {
-        Self {
+        let mut graph = Self {
             vertices,
             edges,
             paths,
+            identifier_map: HashMap::new(),
+            vertex_counter: 0,
+            edge_counter: 0,
+            path_counter: 0,
+        };
+        graph.rebuild_identifier_map();
+        graph
+    }
+
+    /// Rebuilds the identifier map from existing vertices, edges, and paths
+    fn rebuild_identifier_map(&mut self) {
+        self.identifier_map.clear();
+        
+        // Track vertex identifiers and find the highest counter
+        let mut max_vertex_counter = 0;
+        for (index, vertex) in self.vertices.iter().enumerate() {
+            self.identifier_map.insert(
+                vertex.identifier.clone(),
+                IdentifierInfo {
+                    identifier_type: IdentifierType::Vertex,
+                    index,
+                },
+            );
+            
+            // Extract counter from auto-generated identifiers
+            if vertex.identifier.starts_with("_v_") {
+                if let Ok(counter) = vertex.identifier[3..].parse::<u32>() {
+                    max_vertex_counter = max_vertex_counter.max(counter);
+                }
+            }
         }
+        
+        // Track edge identifiers and find the highest counter
+        let mut max_edge_counter = 0;
+        for (index, edge) in self.edges.iter().enumerate() {
+            if !edge.identifier.is_empty() {
+                self.identifier_map.insert(
+                    edge.identifier.clone(),
+                    IdentifierInfo {
+                        identifier_type: IdentifierType::Edge,
+                        index,
+                    },
+                );
+                
+                // Extract counter from auto-generated identifiers
+                if edge.identifier.starts_with("_e_") {
+                    if let Ok(counter) = edge.identifier[3..].parse::<u32>() {
+                        max_edge_counter = max_edge_counter.max(counter);
+                    }
+                }
+            }
+        }
+        
+        // Track path identifiers and find the highest counter
+        let mut max_path_counter = 0;
+        for (path_name, _) in self.paths.iter() {
+            self.identifier_map.insert(
+                path_name.clone(),
+                IdentifierInfo {
+                    identifier_type: IdentifierType::Path,
+                    index: 0, // Paths don't have numeric indices in the current design
+                },
+            );
+            
+            // Extract counter from auto-generated identifiers
+            if let Some(stripped) = path_name.strip_prefix("_p_") {
+                if let Ok(counter) = stripped.parse::<u32>() {
+                    max_path_counter = max_path_counter.max(counter);
+                }
+            }
+        }
+        
+        // Set counters to be one higher than the maximum found
+        self.vertex_counter = max_vertex_counter + 1;
+        self.edge_counter = max_edge_counter + 1;
+        self.path_counter = max_path_counter + 1;
+    }
+
+    /// Looks up an identifier in the pattern graph
+    pub fn lookup_identifier(&self, identifier: &str) -> Option<&IdentifierInfo> {
+        self.identifier_map.get(identifier)
+    }
+
+    /// Checks if an identifier is already used
+    #[allow(dead_code)]
+    pub fn is_identifier_used(&self, identifier: &str) -> bool {
+        self.identifier_map.contains_key(identifier)
+    }
+
+    /// Creates a new unique vertex identifier
+    #[allow(dead_code)]
+    pub fn create_vertex_identifier(&mut self) -> String {
+        loop {
+            let identifier = format!("_v_{}", self.vertex_counter);
+            self.vertex_counter += 1;
+            if !self.is_identifier_used(&identifier) {
+                return identifier;
+            }
+        }
+    }
+
+    /// Creates a new unique edge identifier
+    #[allow(dead_code)]
+    pub fn create_edge_identifier(&mut self) -> String {
+        loop {
+            let identifier = format!("_e_{}", self.edge_counter);
+            self.edge_counter += 1;
+            if !self.is_identifier_used(&identifier) {
+                return identifier;
+            }
+        }
+    }
+
+    /// Creates a new unique path identifier
+    #[allow(dead_code)]
+    pub fn create_path_identifier(&mut self) -> String {
+        loop {
+            let identifier = format!("_p_{}", self.path_counter);
+            self.path_counter += 1;
+            if !self.is_identifier_used(&identifier) {
+                return identifier;
+            }
+        }
+    }
+
+    /// Registers an identifier in the identifier map
+    fn register_identifier(&mut self, identifier: String, identifier_type: IdentifierType, index: usize) {
+        self.identifier_map.insert(
+            identifier,
+            IdentifierInfo {
+                identifier_type,
+                index,
+            },
+        );
     }
 
     /// Adds a vertex to the graph
     #[allow(dead_code)]
-    pub fn add_vertex(&mut self, vertex: PatternVertex) {
+    pub fn add_vertex(&mut self, vertex: PatternVertex) -> Result<(), String> {
+        // Check if the vertex identifier is already used by a different type
+        if let Some(existing_info) = self.lookup_identifier(&vertex.identifier) {
+            if existing_info.identifier_type != IdentifierType::Vertex {
+                return Err(format!(
+                    "Identifier '{}' is already used by a {:?}", 
+                    vertex.identifier, existing_info.identifier_type
+                ));
+            }
+            // If it's already used by a vertex, we could either error or update - let's error for now
+            return Err(format!(
+                "Vertex identifier '{}' is already used", 
+                vertex.identifier
+            ));
+        }
+
+        let index = self.vertices.len();
+        self.register_identifier(vertex.identifier.clone(), IdentifierType::Vertex, index);
         self.vertices.push(vertex);
+        Ok(())
     }
 
     /// Adds an edge to the graph
     #[allow(dead_code)]
-    pub fn add_edge(&mut self, edge: PatternEdge) {
+    pub fn add_edge(&mut self, edge: PatternEdge) -> Result<(), String> {
+        // Check if the edge identifier is already used (only if not empty)
+        if !edge.identifier.is_empty() {
+            if let Some(existing_info) = self.lookup_identifier(&edge.identifier) {
+                if existing_info.identifier_type != IdentifierType::Edge {
+                    return Err(format!(
+                        "Identifier '{}' is already used by a {:?}", 
+                        edge.identifier, existing_info.identifier_type
+                    ));
+                }
+                // If it's already used by an edge, error
+                return Err(format!(
+                    "Edge identifier '{}' is already used", 
+                    edge.identifier
+                ));
+            }
+        }
+
+        let index = self.edges.len();
+        if !edge.identifier.is_empty() {
+            self.register_identifier(edge.identifier.clone(), IdentifierType::Edge, index);
+        }
         self.edges.push(edge);
+        Ok(())
     }
 
     /// Adds a named pattern path
     #[allow(dead_code)]
-    pub fn add_path(&mut self, name: String, path: PatternPath) {
+    pub fn add_path(&mut self, name: String, path: PatternPath) -> Result<(), String> {
+        // Check if the path name is already used by a different type
+        if let Some(existing_info) = self.lookup_identifier(&name) {
+            if existing_info.identifier_type != IdentifierType::Path {
+                return Err(format!(
+                    "Identifier '{}' is already used by a {:?}", 
+                    name, existing_info.identifier_type
+                ));
+            }
+            // If it's already used by a path, we could update it - but let's error for now
+            return Err(format!(
+                "Path identifier '{name}' is already used"
+            ));
+        }
+
+        self.register_identifier(name.clone(), IdentifierType::Path, 0);
         self.paths.insert(name, path);
+        Ok(())
     }
 
     /// Gets a vertex by its identifier
@@ -391,11 +612,17 @@ impl PatternGraph {
         let paths = PatternPaths {
             paths: converted_paths,
         };
-        Self {
+        let mut graph = Self {
             vertices,
             edges,
             paths,
-        }
+            identifier_map: HashMap::new(),
+            vertex_counter: 0,
+            edge_counter: 0,
+            path_counter: 0,
+        };
+        graph.rebuild_identifier_map();
+        graph
     }
 
     /// Creates an EdgeIndex for this pattern graph
@@ -647,7 +874,7 @@ fn process_pattern(
             // Extract the path name
             let path_name = extract_identifier(path_name_node).unwrap_or_else(|| {
                 *path_counter += 1;
-                format!("path{}", *path_counter)
+                format!("_p_{}", *path_counter)
             });
 
             // Process the pattern path and collect edge indices
@@ -679,7 +906,7 @@ fn process_pattern(
     } else if pattern_type == cypher_pattern_path {
         // Anonymous path - invent a name
         *path_counter += 1;
-        let path_name = format!("path{}", *path_counter);
+        let path_name = format!("_p_{}", *path_counter);
 
         let edges_start_index = edges.len();
         let vertices_start_index = vertices.len();
@@ -708,7 +935,7 @@ fn process_pattern(
     } else {
         // Try to process as pattern path anyway with invented name
         *path_counter += 1;
-        let path_name = format!("path{}", *path_counter);
+        let path_name = format!("_p_{}", *path_counter);
 
         let edges_start_index = edges.len();
         let vertices_start_index = vertices.len();
@@ -928,7 +1155,7 @@ fn process_node_pattern(
 
     // Generate identifier if empty
     if identifier.is_empty() {
-        identifier = format!("n_{node_counter}");
+        identifier = format!("_v_{node_counter}");
         *node_counter += 1;
     }
 
@@ -985,7 +1212,7 @@ fn process_relationship_pattern(
 
     // Generate identifier if empty
     if identifier.is_empty() {
-        identifier = format!("r_{rel_counter}");
+        identifier = format!("_e_{rel_counter}");
         *rel_counter += 1;
     }
 

@@ -623,7 +623,7 @@ fn test_basic_node_patterns() {
     let graph = result.unwrap();
     assert_eq!(graph.vertices.len(), 1);
     assert_eq!(graph.edges.len(), 0);
-    assert!(graph.vertices[0].identifier.starts_with("n_"));
+    assert!(graph.vertices[0].identifier.starts_with("_v_"));
     assert_eq!(graph.vertices[0].label, None);
     assert!(graph.vertices[0].properties.is_empty());
 
@@ -1090,7 +1090,7 @@ fn test_graph_printing() {
 
     // Test with single vertex
     let mut graph = PatternGraph::new();
-    graph.add_vertex(PatternVertex {
+    let _ = graph.add_vertex(PatternVertex {
         identifier: "test".to_string(),
         label: Some("TestLabel".to_string()),
         properties: HashMap::new(),
@@ -1280,9 +1280,9 @@ fn test_path_name_tracking() {
     assert_eq!(graph.vertices.len(), 2);
     assert_eq!(graph.edges.len(), 1);
     assert_eq!(graph.paths.len(), 1);
-    assert!(graph.paths.as_inner().contains_key("path1"));
+    assert!(graph.paths.as_inner().contains_key("_p_1"));
     assert_eq!(
-        graph.paths.as_inner()["path1"],
+        graph.paths.as_inner()["_p_1"],
         crate::pattern_graph::PatternPath::ProperPath(vec![0])
     );
 
@@ -1293,14 +1293,14 @@ fn test_path_name_tracking() {
     assert_eq!(graph.vertices.len(), 4);
     assert_eq!(graph.edges.len(), 2);
     assert_eq!(graph.paths.len(), 2);
-    assert!(graph.paths.as_inner().contains_key("path1"));
-    assert!(graph.paths.as_inner().contains_key("path2"));
+    assert!(graph.paths.as_inner().contains_key("_p_1"));
+    assert!(graph.paths.as_inner().contains_key("_p_2"));
     // Each path should contain one edge
-    match &graph.paths.as_inner()["path1"] {
+    match &graph.paths.as_inner()["_p_1"] {
         crate::pattern_graph::PatternPath::ProperPath(edges) => assert_eq!(edges.len(), 1),
         _ => panic!("Expected ProperPath"),
     }
-    match &graph.paths.as_inner()["path2"] {
+    match &graph.paths.as_inner()["_p_2"] {
         crate::pattern_graph::PatternPath::ProperPath(edges) => assert_eq!(edges.len(), 1),
         _ => panic!("Expected ProperPath"),
     }
@@ -1315,7 +1315,7 @@ fn test_path_name_tracking() {
     assert_eq!(graph.edges.len(), 2);
     assert_eq!(graph.paths.len(), 2);
     assert!(graph.paths.as_inner().contains_key("named_path"));
-    assert!(graph.paths.as_inner().contains_key("path1")); // Anonymous path gets path1 in this query
+    assert!(graph.paths.as_inner().contains_key("_p_1")); // Anonymous path gets _p_1 in this query
 
     // Test 5: Complex path with multiple edges
     let result =
