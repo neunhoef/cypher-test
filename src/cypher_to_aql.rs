@@ -479,8 +479,174 @@ fn collect_exported_variables(aql_lines: &[AQLLine], pattern_graph: &PatternGrap
     exported_vars
 }
 
+/// Helper function to check if an edge is multi-hop
+fn is_multi_hop_edge(edge: &crate::pattern_graph::PatternEdge) -> bool {
+    let min_depth = edge.min_depth.unwrap_or(1);
+    let max_depth = edge.max_depth.unwrap_or(1);
+    min_depth != 1 || max_depth != 1
+}
+
+/// Helper function to get the path variable name for an edge
+fn get_path_variable_name(edge: &crate::pattern_graph::PatternEdge) -> String {
+    if !edge.identifier.is_empty() {
+        format!("_p_{}", edge.identifier)
+    } else {
+        format!("_p_{}", edge.target)
+    }
+}
+
+/// Generate vertices array expression for a path, handling multi-hop edges
+fn generate_path_vertices_array(
+    edge_indices: &[usize],
+    pattern_graph: &PatternGraph,
+) -> Result<String, String> {
+    // Check if any edges are multi-hop to determine if we need complex processing
+    let has_multi_hop = edge_indices
+        .iter()
+        .any(|&edge_index| is_multi_hop_edge(&pattern_graph.edges[edge_index]));
+
+    if !has_multi_hop {
+        // All edges are single-hop, use simple vertex collection
+        let mut vertex_identifiers = Vec::new();
+        let mut seen_vertices = std::collections::HashSet::new();
+
+        for &edge_index in edge_indices {
+            let edge = &pattern_graph.edges[edge_index];
+
+            // Add source vertex if not seen
+            if !seen_vertices.contains(&edge.source) {
+                vertex_identifiers.push(edge.source.clone());
+                seen_vertices.insert(edge.source.clone());
+            }
+
+            // Add target vertex if not seen
+            if !seen_vertices.contains(&edge.target) {
+                vertex_identifiers.push(edge.target.clone());
+                seen_vertices.insert(edge.target.clone());
+            }
+        }
+
+        return Ok(format!("[{}]", vertex_identifiers.join(", ")));
+    }
+
+    // Complex processing for multi-hop edges
+    let mut vertex_components = Vec::new();
+    let mut seen_vertices = std::collections::HashSet::new();
+
+    for (position, &edge_index) in edge_indices.iter().enumerate() {
+        if edge_index >= pattern_graph.edges.len() {
+            return Err(format!(
+                "Invalid edge index {edge_index} in path"
+            ));
+        }
+
+        let edge = &pattern_graph.edges[edge_index];
+        let is_last_edge = position == edge_indices.len() - 1;
+
+        // Add source vertex if not seen (for first edge only)
+        if position == 0 && !seen_vertices.contains(&edge.source) {
+            if is_multi_hop_edge(edge) {
+                // For multi-hop edges, we need the first vertex from _p_e.vertices
+                let path_var = get_path_variable_name(edge);
+                vertex_components.push(format!("{path_var}.vertices[0]"));
+            } else {
+                // For single-hop edges, just use the vertex identifier
+                vertex_components.push(edge.source.clone());
+            }
+            seen_vertices.insert(edge.source.clone());
+        }
+
+        // Add vertices from the edge traversal
+        if is_multi_hop_edge(edge) {
+            let path_var = get_path_variable_name(edge);
+            if is_last_edge {
+                // For the last multi-hop edge, use all vertices from _p_e.vertices (except the first one if not the first edge)
+                if position == 0 {
+                    vertex_components.push(format!("{path_var}.vertices"));
+                } else {
+                    // Skip the first vertex to avoid duplication
+                    vertex_components.push(format!("SLICE({path_var}.vertices, 1)"));
+                }
+            } else {
+                // For non-last multi-hop edges, use REMOVE_NTH to remove the last vertex
+                if position == 0 {
+                    vertex_components.push(format!("REMOVE_NTH({path_var}.vertices, -1)"));
+                } else {
+                    // Skip the first vertex and remove the last vertex
+                    vertex_components.push(format!("REMOVE_NTH(SLICE({path_var}.vertices, 1), -1)"));
+                }
+            }
+        } else {
+            // For single-hop edges, add the target vertex if not seen
+            if !seen_vertices.contains(&edge.target) {
+                vertex_components.push(edge.target.clone());
+                seen_vertices.insert(edge.target.clone());
+            }
+        }
+    }
+
+    // Use FLATTEN to combine all vertex components
+    if vertex_components.len() == 1 {
+        Ok(vertex_components.into_iter().next().unwrap())
+    } else {
+        Ok(format!("FLATTEN([{}])", vertex_components.join(", ")))
+    }
+}
+
+/// Generate edges array expression for a path, handling multi-hop edges
+fn generate_path_edges_array(
+    edge_indices: &[usize],
+    pattern_graph: &PatternGraph,
+) -> Result<String, String> {
+    // Check if any edges are multi-hop to determine if we need complex processing
+    let has_multi_hop = edge_indices
+        .iter()
+        .any(|&edge_index| is_multi_hop_edge(&pattern_graph.edges[edge_index]));
+
+    if !has_multi_hop {
+        // All edges are single-hop, use simple edge array
+        let edge_identifiers: Vec<String> = edge_indices
+            .iter()
+            .map(|&edge_index| pattern_graph.edges[edge_index].identifier.clone())
+            .collect();
+
+        return Ok(format!("[{}]", edge_identifiers.join(", ")));
+    }
+
+    // Complex processing for multi-hop edges
+    let mut edge_components = Vec::new();
+
+    for &edge_index in edge_indices {
+        if edge_index >= pattern_graph.edges.len() {
+            return Err(format!(
+                "Invalid edge index {edge_index} in path"
+            ));
+        }
+
+        let edge = &pattern_graph.edges[edge_index];
+
+        if is_multi_hop_edge(edge) {
+            // For multi-hop edges, use _p_e.edges
+            let path_var = get_path_variable_name(edge);
+            edge_components.push(format!("{path_var}.edges"));
+        } else {
+            // For single-hop edges, just use the edge identifier
+            edge_components.push(format!("[{}]", edge.identifier));
+        }
+    }
+
+    // Use FLATTEN to combine all edge components
+    if edge_components.len() == 1 {
+        Ok(edge_components.into_iter().next().unwrap())
+    } else {
+        Ok(format!("FLATTEN([{}])", edge_components.join(", ")))
+    }
+}
+
 /// Generates an AQL expression to construct a path object as JSON
 /// The path object has the structure: {vertices: [...], edges: [...]}
+/// For multi-hop edges, uses the _p_e.vertices and _p_e.edges arrays with proper
+/// handling of vertex overlap and FLATTEN operations.
 ///
 /// # Arguments
 /// * `path_name` - Name of the path identifier
@@ -523,41 +689,9 @@ fn generate_path_expression(
                 return Err(format!("ProperPath '{path_name}' has no edges"));
             }
 
-            // Build the vertices array by collecting all vertices along the path
-            let mut vertex_identifiers = Vec::new();
-            let mut seen_vertices = std::collections::HashSet::new();
-
-            for &edge_index in edge_indices {
-                if edge_index >= pattern_graph.edges.len() {
-                    return Err(format!(
-                        "Invalid edge index {edge_index} in path '{path_name}'"
-                    ));
-                }
-
-                let edge = &pattern_graph.edges[edge_index];
-
-                // Add source vertex if not seen
-                if !seen_vertices.contains(&edge.source) {
-                    vertex_identifiers.push(edge.source.clone());
-                    seen_vertices.insert(edge.source.clone());
-                }
-
-                // Add target vertex if not seen
-                if !seen_vertices.contains(&edge.target) {
-                    vertex_identifiers.push(edge.target.clone());
-                    seen_vertices.insert(edge.target.clone());
-                }
-            }
-
-            // Build the edges array
-            let edge_identifiers: Vec<String> = edge_indices
-                .iter()
-                .map(|&edge_index| pattern_graph.edges[edge_index].identifier.clone())
-                .collect();
-
-            // Generate AQL expression
-            let vertices_array = format!("[{}]", vertex_identifiers.join(", "));
-            let edges_array = format!("[{}]", edge_identifiers.join(", "));
+            // Generate vertices and edges arrays with multi-hop support
+            let vertices_array = generate_path_vertices_array(edge_indices, pattern_graph)?;
+            let edges_array = generate_path_edges_array(edge_indices, pattern_graph)?;
 
             Ok(format!(
                 "{{\"vertices\": {vertices_array}, \"edges\": {edges_array}}}"
