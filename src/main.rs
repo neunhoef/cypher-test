@@ -13,8 +13,10 @@ mod cypher;
 mod cypher_to_aql;
 mod pattern_graph;
 use cypher::{find_match_and_return_clauses, parse_return_clause};
-use pattern_graph::{GraphError, make_match_graph, print_pattern_graph, PatternPath, RelationshipDirection};
-use cypher_to_aql::{generate_complete_aql, format_aql_query};
+use cypher_to_aql::{format_aql_query, generate_complete_aql};
+use pattern_graph::{
+    GraphError, PatternPath, RelationshipDirection, make_match_graph, print_pattern_graph,
+};
 
 fn main() {
     // Get command line arguments
@@ -129,7 +131,7 @@ fn main() {
                             graph.edge_count(),
                             graph.path_count()
                         );
-                        
+
                         print_pattern_graph(&graph);
 
                         // Print detailed path information after the pattern graph
@@ -153,22 +155,43 @@ fn main() {
                                             for &edge_idx in edge_indices {
                                                 if edge_idx < graph.edges.len() {
                                                     let edge = &graph.edges[edge_idx];
-                                                    let edge_label = if !edge.identifier.is_empty() {
+                                                    let edge_label = if !edge.identifier.is_empty()
+                                                    {
                                                         format!(" {}", edge.identifier)
                                                     } else {
                                                         String::new()
                                                     };
-                                                    let rel_type = edge.rel_type.as_ref().map_or("", |t| t.as_str());
+                                                    let rel_type = edge
+                                                        .rel_type
+                                                        .as_ref()
+                                                        .map_or("", |t| t.as_str());
                                                     let direction_arrow = match edge.direction {
                                                         RelationshipDirection::Outbound => "->",
                                                         RelationshipDirection::Inbound => "<-",
-                                                        RelationshipDirection::Bidirectional => "<->",
+                                                        RelationshipDirection::Bidirectional => {
+                                                            "<->"
+                                                        }
                                                     };
-                                                    
-                                                    if edge.direction == RelationshipDirection::Inbound {
-                                                        println!("  {} <-[{}:{}]- {}", edge.target, edge_label, rel_type, edge.source);
+
+                                                    if edge.direction
+                                                        == RelationshipDirection::Inbound
+                                                    {
+                                                        println!(
+                                                            "  {} <-[{}:{}]- {}",
+                                                            edge.target,
+                                                            edge_label,
+                                                            rel_type,
+                                                            edge.source
+                                                        );
                                                     } else {
-                                                        println!("  {} -[{}:{}]{} {}", edge.source, edge_label, rel_type, direction_arrow, edge.target);
+                                                        println!(
+                                                            "  {} -[{}:{}]{} {}",
+                                                            edge.source,
+                                                            edge_label,
+                                                            rel_type,
+                                                            direction_arrow,
+                                                            edge.target
+                                                        );
                                                     }
                                                 }
                                             }
@@ -204,7 +227,11 @@ fn main() {
                                 println!(
                                     "\n=== Pattern Graph Analysis ===\n\
                                      Graph connectivity: {}",
-                                    if connected { "Connected" } else { "Not connected" }
+                                    if connected {
+                                        "Connected"
+                                    } else {
+                                        "Not connected"
+                                    }
                                 );
 
                                 if !connected {
