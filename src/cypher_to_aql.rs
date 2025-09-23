@@ -72,6 +72,7 @@ fn generate_multi_hop_edge_filter_conditions(properties: &HashMap<String, Value>
 
 /// Generate PRUNE conditions for vertex properties in multi-hop traversals
 /// Returns a string with PRUNE condition for optimization
+/// Uses inverted logic: prunes when edge is not null AND any property doesn't match
 ///
 /// # Arguments
 /// * `vertex` - The target vertex with properties
@@ -88,11 +89,11 @@ fn generate_vertex_prune_conditions(vertex: &PatternVertex, vertex_identifier: &
     let vertex_conditions: Vec<String> = vertex.properties
         .iter()
         .map(|(key, value)| match value {
-            Value::String(s) => format!("{vertex_identifier}.{key} == '{s}'"),
-            Value::Number(n) => format!("{vertex_identifier}.{key} == {n}"),
-            Value::Bool(b) => format!("{vertex_identifier}.{key} == {b}"),
-            Value::Null => format!("{vertex_identifier}.{key} == null"),
-            _ => format!("{vertex_identifier}.{key} == {value}"),
+            Value::String(s) => format!("{vertex_identifier}.{key} != '{s}'"),
+            Value::Number(n) => format!("{vertex_identifier}.{key} != {n}"),
+            Value::Bool(b) => format!("{vertex_identifier}.{key} != {b}"),
+            Value::Null => format!("{vertex_identifier}.{key} != null"),
+            _ => format!("{vertex_identifier}.{key} != {value}"),
         })
         .collect();
 
@@ -100,14 +101,14 @@ fn generate_vertex_prune_conditions(vertex: &PatternVertex, vertex_identifier: &
         return String::new();
     }
 
-    let vertex_condition_part = vertex_conditions.join(" && ");
+    let vertex_condition_part = vertex_conditions.join(" || ");
     
     if edge_identifier.is_empty() {
-        // No edge variable, just the vertex conditions
+        // No edge variable, just the inverted vertex conditions
         vertex_condition_part
     } else {
-        // Include the edge null check
-        format!("{edge_identifier} == null || ({vertex_condition_part})")
+        // Include the inverted edge null check with AND
+        format!("{edge_identifier} != null && ({vertex_condition_part})")
     }
 }
 
