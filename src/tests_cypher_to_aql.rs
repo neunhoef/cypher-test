@@ -26,6 +26,19 @@ fn create_test_edge(source: &str, target: &str, direction: RelationshipDirection
     }
 }
 
+fn create_multi_hop_edge(source: &str, target: &str, direction: RelationshipDirection, min_depth: u32, max_depth: u32) -> PatternEdge {
+    PatternEdge {
+        identifier: format!("{}_{}", source, target),
+        source: source.to_string(),
+        target: target.to_string(),
+        rel_type: Some("KNOWS".to_string()),
+        properties: HashMap::new(),
+        direction,
+        min_depth: Some(min_depth),
+        max_depth: Some(max_depth),
+    }
+}
+
 #[test]
 fn test_edge_index_outbound() {
     let vertices = vec![
@@ -558,4 +571,271 @@ fn test_multiple_vertex_paths_same_vertex() {
     // Both paths should generate the same vertex-only path structure
     assert!(query.contains("path1: {\"vertices\": [shared_node], \"edges\": []}"));
     assert!(query.contains("path2: {\"vertices\": [shared_node], \"edges\": []}"));
+}
+
+#[test]
+fn test_multi_hop_edge_traversal() {
+    let vertices = vec![
+        create_test_vertex("a"), // index 0
+        create_test_vertex("b"), // index 1
+    ];
+    
+    let edges = vec![create_multi_hop_edge("a", "b", RelationshipDirection::Outbound, 2, 3)];
+    
+    let pattern_graph = PatternGraph::from_components(vertices, edges.clone(), crate::pattern_graph::PatternPaths::new());
+    
+    let result = match_to_aql(&pattern_graph);
+    assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+    
+    let (aql_lines, _) = result.unwrap();
+    let query = format_aql_query(&aql_lines);
+    
+    // Should generate multi-hop traversal with path variable
+    assert!(query.contains("FOR b, a_b, _p_a_b IN 2..3 OUTBOUND a._id KNOWS"));
+}
+
+#[test]
+fn test_multi_hop_edge_with_properties() {
+    let vertices = vec![
+        create_test_vertex("a"),
+        create_test_vertex("b"),
+    ];
+    
+    let mut edge = create_multi_hop_edge("a", "b", RelationshipDirection::Outbound, 1, 5);
+    edge.properties.insert("weight".to_string(), serde_json::Value::Number(serde_json::Number::from(10)));
+    
+    let edges = vec![edge];
+    let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
+    
+    let result = match_to_aql(&pattern_graph);
+    assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+    
+    let (aql_lines, _) = result.unwrap();
+    let query = format_aql_query(&aql_lines);
+    
+    // Should generate multi-hop traversal
+    assert!(query.contains("FOR b, a_b, _p_a_b IN 1..5 OUTBOUND a._id KNOWS"));
+    // Should generate path-based edge property filter
+    assert!(query.contains("FILTER _p_a_b.edges[*].weight ALL == 10"));
+}
+
+#[test]
+fn test_multi_hop_vertex_properties() {
+    let vertices = vec![
+        create_test_vertex("a"),
+        {
+            let mut vertex = create_test_vertex("b");
+            vertex.properties.insert("name".to_string(), serde_json::Value::String("test".to_string()));
+            vertex
+        },
+    ];
+    
+    let edges = vec![create_multi_hop_edge("a", "b", RelationshipDirection::Outbound, 2, 4)];
+    let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
+    
+    let result = match_to_aql(&pattern_graph);
+    assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+    
+    let (aql_lines, _) = result.unwrap();
+    let query = format_aql_query(&aql_lines);
+    
+    // The algorithm chooses b as anchor because it has properties
+    // So we traverse INBOUND from b to a
+    assert!(query.contains("FOR b IN vertices"));
+    assert!(query.contains("FILTER b.name == 'test'"));
+    assert!(query.contains("FOR a, a_b, _p_a_b IN 2..4 INBOUND b._id KNOWS"));
+    // No additional FILTER needed for vertex a since it has no properties
+}
+
+#[test]
+fn test_multi_hop_without_edge_identifier() {
+    let vertices = vec![
+        create_test_vertex("a"),
+        create_test_vertex("b"),
+    ];
+    
+    let mut edge = create_multi_hop_edge("a", "b", RelationshipDirection::Outbound, 1, 3);
+    edge.identifier = "".to_string(); // Remove edge identifier
+    
+    let edges = vec![edge];
+    let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
+    
+    let result = match_to_aql(&pattern_graph);
+    assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+    
+    let (aql_lines, _) = result.unwrap();
+    let query = format_aql_query(&aql_lines);
+    
+    // Should generate multi-hop traversal without edge variable but with path variable
+    assert!(query.contains("FOR b, _p_b IN 1..3 OUTBOUND a._id KNOWS"));
+}
+
+#[test]
+fn test_single_hop_still_works() {
+    let vertices = vec![
+        create_test_vertex("a"),
+        create_test_vertex("b"),
+    ];
+    
+    let mut edge = create_test_edge("a", "b", RelationshipDirection::Outbound);
+    edge.rel_type = Some("KNOWS".to_string());
+    edge.properties.insert("weight".to_string(), serde_json::Value::Number(serde_json::Number::from(5)));
+    
+    let edges = vec![edge];
+    let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
+    
+    let result = match_to_aql(&pattern_graph);
+    assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+    
+    let (aql_lines, _) = result.unwrap();
+    let query = format_aql_query(&aql_lines);
+    
+    // Should still generate single-hop traversal (no path variable)
+    assert!(query.contains("FOR b, a_b IN 1..1 OUTBOUND a._id KNOWS"));
+    // Should use regular edge property filter
+    assert!(query.contains("FILTER a_b.weight == 5"));
+}
+
+#[test]
+fn test_multi_hop_with_target_vertex_filter() {
+    let vertices = vec![
+        {
+            let mut vertex = create_test_vertex("a");
+            vertex.properties.insert("id".to_string(), serde_json::Value::Number(serde_json::Number::from(1)));
+            vertex.properties.insert("type".to_string(), serde_json::Value::String("source".to_string()));
+            vertex
+        },
+        {
+            let mut vertex = create_test_vertex("b");
+            vertex.properties.insert("name".to_string(), serde_json::Value::String("target".to_string()));
+            vertex
+        },
+    ];
+    
+    let edges = vec![create_multi_hop_edge("a", "b", RelationshipDirection::Outbound, 2, 3)];
+    let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
+    
+    let result = match_to_aql(&pattern_graph);
+    assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+    
+    let (aql_lines, _) = result.unwrap();
+    let query = format_aql_query(&aql_lines);
+    
+    // Vertex a has more properties, so it becomes the anchor
+    assert!(query.contains("FOR a IN vertices"));
+    // Check for both property filters (order may vary due to HashMap iteration)
+    assert!(query.contains("a.id == 1"));
+    assert!(query.contains("a.type == 'source'"));
+    assert!(query.contains("FOR b, a_b, _p_a_b IN 2..3 OUTBOUND a._id KNOWS"));
+    // Should generate simple vertex property filter for target vertex b  
+    assert!(query.contains("FILTER b.name == 'target'"));
+}
+
+#[test]
+fn test_multi_hop_with_prune_statement() {
+    let vertices = vec![
+        {
+            let mut vertex = create_test_vertex("a");
+            vertex.properties.insert("type".to_string(), serde_json::Value::String("source".to_string()));
+            vertex
+        },
+        {
+            let mut vertex = create_test_vertex("b");
+            vertex.properties.insert("name".to_string(), serde_json::Value::String("target".to_string()));
+            vertex.properties.insert("active".to_string(), serde_json::Value::Bool(true));
+            vertex
+        },
+    ];
+    
+    let edges = vec![create_multi_hop_edge("a", "b", RelationshipDirection::Outbound, 2, 4)];
+    let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
+    
+    let result = match_to_aql(&pattern_graph);
+    assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+    
+    let (aql_lines, _) = result.unwrap();
+    let query = format_aql_query(&aql_lines);
+    
+    // The algorithm should choose b as anchor because it has more properties (2 vs 1)
+    // So we traverse INBOUND from b to a
+    assert!(query.contains("FOR b IN vertices"));
+    assert!(query.contains("FOR a, a_b, _p_a_b IN 2..4 INBOUND b._id KNOWS"));
+    // Should generate PRUNE statement with edge null check for target vertex a
+    assert!(query.contains("PRUNE a_b == null || (a.type == 'source')"));
+    // Should generate property filters for anchor b
+    assert!(query.contains("b.name == 'target'"));
+    assert!(query.contains("b.active == true"));
+    // Should generate simple vertex property filter for target vertex a
+    assert!(query.contains("FILTER a.type == 'source'"));
+}
+
+#[test]
+fn test_multi_hop_prune_without_edge_identifier() {
+    let vertices = vec![
+        {
+            let mut vertex = create_test_vertex("a");
+            vertex.properties.insert("id".to_string(), serde_json::Value::Number(serde_json::Number::from(1)));
+            vertex.properties.insert("type".to_string(), serde_json::Value::String("source".to_string()));
+            vertex.properties.insert("priority".to_string(), serde_json::Value::Number(serde_json::Number::from(5)));
+            vertex
+        },
+        {
+            let mut vertex = create_test_vertex("b");
+            vertex.properties.insert("status".to_string(), serde_json::Value::String("active".to_string()));
+            vertex
+        },
+    ];
+    
+    let mut edge = create_multi_hop_edge("a", "b", RelationshipDirection::Outbound, 1, 3);
+    edge.identifier = "".to_string(); // Remove edge identifier
+    
+    let edges = vec![edge];
+    let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
+    
+    let result = match_to_aql(&pattern_graph);
+    assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+    
+    let (aql_lines, _) = result.unwrap();
+    let query = format_aql_query(&aql_lines);
+    
+    // The algorithm chooses a as anchor because it has more properties (3 vs 1)
+    // So we traverse OUTBOUND from a to b (no edge variable)
+    assert!(query.contains("FOR a IN vertices"));
+    assert!(query.contains("FOR b, _p_b IN 1..3 OUTBOUND a._id KNOWS"));
+    // Should generate PRUNE statement without edge null check for vertex b
+    assert!(query.contains("PRUNE b.status == 'active'"));
+    // Should still generate simple vertex property filter
+    assert!(query.contains("FILTER b.status == 'active'"));
+}
+
+#[test]
+fn test_single_hop_no_prune() {
+    let vertices = vec![
+        create_test_vertex("a"),
+        {
+            let mut vertex = create_test_vertex("b");
+            vertex.properties.insert("name".to_string(), serde_json::Value::String("test".to_string()));
+            vertex
+        },
+    ];
+    
+    let mut edge = create_test_edge("a", "b", RelationshipDirection::Outbound);
+    edge.rel_type = Some("KNOWS".to_string());
+    
+    let edges = vec![edge];
+    let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
+    
+    let result = match_to_aql(&pattern_graph);
+    assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
+    
+    let (aql_lines, _) = result.unwrap();
+    let query = format_aql_query(&aql_lines);
+    
+    // The algorithm chooses b as anchor because it has properties
+    // So we traverse INBOUND from b to a
+    assert!(query.contains("FOR b IN vertices"));
+    assert!(query.contains("FILTER b.name == 'test'"));
+    assert!(query.contains("FOR a, a_b IN 1..1 INBOUND b._id KNOWS"));
+    // Should NOT generate PRUNE statement for single-hop
+    assert!(!query.contains("PRUNE"));
 }

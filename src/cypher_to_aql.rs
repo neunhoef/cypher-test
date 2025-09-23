@@ -41,6 +41,76 @@ fn generate_filter_conditions(properties: &HashMap<String, Value>, variable_name
     conditions.join(" AND ")
 }
 
+/// Generate FILTER conditions for multi-hop edge properties
+/// Returns a string with all property conditions using the path syntax
+///
+/// # Arguments
+/// * `properties` - Property map with key-value pairs
+/// * `path_variable` - Name of the path variable (e.g., "_p_e")
+///
+/// # Returns
+/// * `String` with FILTER conditions using path edges syntax, empty if no properties
+fn generate_multi_hop_edge_filter_conditions(properties: &HashMap<String, Value>, path_variable: &str) -> String {
+    if properties.is_empty() {
+        return String::new();
+    }
+
+    let conditions: Vec<String> = properties
+        .iter()
+        .map(|(key, value)| match value {
+            Value::String(s) => format!("{path_variable}.edges[*].{key} ALL == '{s}'"),
+            Value::Number(n) => format!("{path_variable}.edges[*].{key} ALL == {n}"),
+            Value::Bool(b) => format!("{path_variable}.edges[*].{key} ALL == {b}"),
+            Value::Null => format!("{path_variable}.edges[*].{key} ALL == null"),
+            _ => format!("{path_variable}.edges[*].{key} ALL == {value}"),
+        })
+        .collect();
+
+    conditions.join(" AND ")
+}
+
+
+/// Generate PRUNE conditions for vertex properties in multi-hop traversals
+/// Returns a string with PRUNE condition for optimization
+///
+/// # Arguments
+/// * `vertex` - The target vertex with properties
+/// * `vertex_identifier` - The identifier of the vertex variable
+/// * `edge_identifier` - The identifier of the edge variable (empty if none)
+///
+/// # Returns
+/// * `String` with PRUNE condition, empty if no properties
+fn generate_vertex_prune_conditions(vertex: &PatternVertex, vertex_identifier: &str, edge_identifier: &str) -> String {
+    if vertex.properties.is_empty() {
+        return String::new();
+    }
+
+    let vertex_conditions: Vec<String> = vertex.properties
+        .iter()
+        .map(|(key, value)| match value {
+            Value::String(s) => format!("{vertex_identifier}.{key} == '{s}'"),
+            Value::Number(n) => format!("{vertex_identifier}.{key} == {n}"),
+            Value::Bool(b) => format!("{vertex_identifier}.{key} == {b}"),
+            Value::Null => format!("{vertex_identifier}.{key} == null"),
+            _ => format!("{vertex_identifier}.{key} == {value}"),
+        })
+        .collect();
+
+    if vertex_conditions.is_empty() {
+        return String::new();
+    }
+
+    let vertex_condition_part = vertex_conditions.join(" && ");
+    
+    if edge_identifier.is_empty() {
+        // No edge variable, just the vertex conditions
+        vertex_condition_part
+    } else {
+        // Include the edge null check
+        format!("{edge_identifier} == null || ({vertex_condition_part})")
+    }
+}
+
 /// Derive edge collection name from relationship type or use default
 ///
 /// # Arguments
@@ -85,23 +155,55 @@ pub fn generate_edge_traversal(
         TraversalDirection::Any => "ANY",
     };
 
-    // Generate FOR statement
+    // Generate FOR statement with proper depth range
+    let min_depth = edge.min_depth.unwrap_or(1);
+    let max_depth = edge.max_depth.unwrap_or(1);
+    let depth_range = format!("{min_depth}..{max_depth}");
+    
+    // Check if this is a multi-hop edge (not 1..1)
+    let is_multi_hop = min_depth != 1 || max_depth != 1;
+    
     let for_statement = if edge.identifier.is_empty() {
         // No edge variable needed
-        format!(
-            "FOR {} IN 1..1 {} {}._id {}",
-            to_vertex.identifier, direction_keyword, from_vertex.identifier, edge_collection
-        )
+        if is_multi_hop {
+            // Multi-hop without edge variable - just vertex and path
+            format!(
+                "FOR {}, _p_{} IN {} {} {}._id {}",
+                to_vertex.identifier, to_vertex.identifier, depth_range, direction_keyword, from_vertex.identifier, edge_collection
+            )
+        } else {
+            // Single-hop without edge variable
+            format!(
+                "FOR {} IN {} {} {}._id {}",
+                to_vertex.identifier, depth_range, direction_keyword, from_vertex.identifier, edge_collection
+            )
+        }
     } else {
         // Include edge variable
-        format!(
-            "FOR {}, {} IN 1..1 {} {}._id {}",
-            to_vertex.identifier,
-            edge.identifier,
-            direction_keyword,
-            from_vertex.identifier,
-            edge_collection
-        )
+        if is_multi_hop {
+            // Multi-hop with edge variable - vertex, edge, and path
+            format!(
+                "FOR {}, {}, _p_{} IN {} {} {}._id {}",
+                to_vertex.identifier,
+                edge.identifier,
+                edge.identifier,
+                depth_range,
+                direction_keyword,
+                from_vertex.identifier,
+                edge_collection
+            )
+        } else {
+            // Single-hop with edge variable
+            format!(
+                "FOR {}, {} IN {} {} {}._id {}",
+                to_vertex.identifier,
+                edge.identifier,
+                depth_range,
+                direction_keyword,
+                from_vertex.identifier,
+                edge_collection
+            )
+        }
     };
 
     let current_indent = *indent;
@@ -111,6 +213,13 @@ pub fn generate_edge_traversal(
     let mut exposed_vars = vec![to_vertex.identifier.clone()];
     if !edge.identifier.is_empty() {
         exposed_vars.push(edge.identifier.clone());
+        if is_multi_hop {
+            // Also expose the path identifier for multi-hop edges
+            exposed_vars.push(format!("_p_{}", edge.identifier));
+        }
+    } else if is_multi_hop {
+        // For multi-hop edges without edge identifier, expose path with vertex identifier
+        exposed_vars.push(format!("_p_{}", to_vertex.identifier));
     }
 
     Ok(AQLLine {
@@ -133,7 +242,20 @@ pub fn generate_edge_filter(edge: &PatternEdge, indent: usize) -> Option<AQLLine
         return None;
     }
 
-    let filter_conditions = generate_filter_conditions(&edge.properties, &edge.identifier);
+    // Check if this is a multi-hop edge
+    let min_depth = edge.min_depth.unwrap_or(1);
+    let max_depth = edge.max_depth.unwrap_or(1);
+    let is_multi_hop = min_depth != 1 || max_depth != 1;
+
+    let filter_conditions = if is_multi_hop {
+        // Use path-based filtering for multi-hop edges
+        let path_variable = format!("_p_{}", edge.identifier);
+        generate_multi_hop_edge_filter_conditions(&edge.properties, &path_variable)
+    } else {
+        // Use regular filtering for single-hop edges
+        generate_filter_conditions(&edge.properties, &edge.identifier)
+    };
+
     if filter_conditions.is_empty() {
         return None;
     }
@@ -142,6 +264,71 @@ pub fn generate_edge_filter(edge: &PatternEdge, indent: usize) -> Option<AQLLine
         content: format!("FILTER {filter_conditions}"),
         indent,
         exposed_variables: vec![], // FILTER statements don't expose new variables
+    })
+}
+
+/// Generate FILTER conditions for vertex properties
+/// Now uses simple vertex property syntax for both single-hop and multi-hop cases
+///
+/// # Arguments
+/// * `vertex` - The target vertex with properties
+/// * `edge` - The edge used to reach this vertex (currently unused, kept for compatibility)
+/// * `indent` - Current indentation level
+///
+/// # Returns
+/// * `Option<AQLLine>` - FILTER line if vertex has properties, None otherwise
+pub fn generate_vertex_filter_for_multi_hop(vertex: &PatternVertex, _edge: &PatternEdge, indent: usize) -> Option<AQLLine> {
+    if vertex.properties.is_empty() {
+        return None;
+    }
+
+    // Use simple vertex property filtering for all cases (both single-hop and multi-hop)
+    let filter_conditions = generate_filter_conditions(&vertex.properties, &vertex.identifier);
+    if filter_conditions.is_empty() {
+        return None;
+    }
+
+    Some(AQLLine {
+        content: format!("FILTER {filter_conditions}"),
+        indent,
+        exposed_variables: vec![], // FILTER statements don't expose new variables
+    })
+}
+
+/// Generate PRUNE statement for vertex properties in multi-hop traversals
+///
+/// # Arguments
+/// * `vertex` - The target vertex with properties
+/// * `edge` - The edge used to reach this vertex (to determine if multi-hop)
+/// * `indent` - Current indentation level
+///
+/// # Returns
+/// * `Option<AQLLine>` - PRUNE line if vertex has properties and edge is multi-hop, None otherwise
+pub fn generate_vertex_prune_for_multi_hop(vertex: &PatternVertex, edge: &PatternEdge, indent: usize) -> Option<AQLLine> {
+    if vertex.properties.is_empty() {
+        return None;
+    }
+
+    // Check if this is a multi-hop edge
+    let min_depth = edge.min_depth.unwrap_or(1);
+    let max_depth = edge.max_depth.unwrap_or(1);
+    let is_multi_hop = min_depth != 1 || max_depth != 1;
+
+    if !is_multi_hop {
+        // No PRUNE needed for single-hop edges
+        return None;
+    }
+
+    // Generate PRUNE conditions
+    let prune_conditions = generate_vertex_prune_conditions(vertex, &vertex.identifier, &edge.identifier);
+    if prune_conditions.is_empty() {
+        return None;
+    }
+
+    Some(AQLLine {
+        content: format!("PRUNE {prune_conditions}"),
+        indent,
+        exposed_variables: vec![], // PRUNE statements don't expose new variables
     })
 }
 
@@ -202,15 +389,7 @@ pub fn match_to_aql(pattern_graph: &PatternGraph) -> Result<(Vec<AQLLine>, usize
         return Err("No vertices in pattern graph".to_string());
     }
 
-    // Validate that all edges have constant depth 1
-    for edge in edges {
-        if edge.min_depth != Some(1) || edge.max_depth != Some(1) {
-            return Err(format!(
-                "Edge '{}' does not have constant depth 1 (min: {:?}, max: {:?}). Variable length relationships are not supported.",
-                edge.identifier, edge.min_depth, edge.max_depth
-            ));
-        }
-    }
+    // Multi-hop edges are now supported
 
     // Find the anchor vertex (most properties, smallest index for ties)
     let anchor_index =
@@ -254,10 +433,21 @@ pub fn match_to_aql(pattern_graph: &PatternGraph) -> Result<(Vec<AQLLine>, usize
                 generate_edge_traversal(spanning_edge, vertices, edges, &mut current_indent)?;
             aql_lines.push(traversal_line);
 
-            // Generate FILTER conditions for edge properties if they exist
+            // Generate PRUNE conditions for target vertex properties if this is a multi-hop edge
             let edge = &edges[spanning_edge.edge_index];
+            let target_vertex = &vertices[spanning_edge.to_vertex];
+            if let Some(vertex_prune) = generate_vertex_prune_for_multi_hop(target_vertex, edge, current_indent) {
+                aql_lines.push(vertex_prune);
+            }
+
+            // Generate FILTER conditions for edge properties if they exist
             if let Some(edge_filter) = generate_edge_filter(edge, current_indent) {
                 aql_lines.push(edge_filter);
+            }
+
+            // Generate FILTER conditions for target vertex properties if they exist
+            if let Some(vertex_filter) = generate_vertex_filter_for_multi_hop(target_vertex, edge, current_indent) {
+                aql_lines.push(vertex_filter);
             }
         }
     }
