@@ -839,3 +839,42 @@ fn test_single_hop_no_prune() {
     // Should NOT generate PRUNE statement for single-hop
     assert!(!query.contains("PRUNE"));
 }
+
+#[test]
+fn test_final_multi_hop_output_example() {
+    let vertices = vec![
+        {
+            let mut vertex = create_test_vertex("start");
+            vertex.properties.insert("id".to_string(), serde_json::Value::Number(serde_json::Number::from(1)));
+            vertex
+        },
+        {
+            let mut vertex = create_test_vertex("end");
+            vertex.properties.insert("name".to_string(), serde_json::Value::String("target".to_string()));
+            vertex.properties.insert("active".to_string(), serde_json::Value::Bool(true));
+            vertex
+        },
+    ];
+    
+    let edges = vec![create_multi_hop_edge("start", "end", RelationshipDirection::Outbound, 1, 4)];
+    let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
+    
+    let result = match_to_aql(&pattern_graph);
+    assert!(result.is_ok());
+    
+    let (aql_lines, _) = result.unwrap();
+    let query = format_aql_query(&aql_lines);
+    
+    // Print the final generated AQL to show the simplified syntax
+    println!("Final generated AQL with simplified vertex filters:");
+    println!("{}", query);
+    
+    // Algorithm chooses end as anchor (2 properties vs 1), so it traverses INBOUND
+    assert!(query.contains("FOR end IN vertices"));
+    assert!(query.contains("FOR start, start_end, _p_start_end IN 1..4 INBOUND end._id KNOWS"));
+    assert!(query.contains("PRUNE start_end == null || (start.id == 1)"));
+    assert!(query.contains("FILTER start.id == 1"));
+    // Check properties individually since HashMap iteration order can vary
+    assert!(query.contains("end.active == true"));
+    assert!(query.contains("end.name == 'target'"));
+}
