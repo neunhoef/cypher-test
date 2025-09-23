@@ -1,5 +1,5 @@
-use libcypher_parser_sys::*;
 use libcypher_parser_sys::cypher_rel_direction::*;
+use libcypher_parser_sys::*;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CStr;
@@ -160,9 +160,9 @@ pub struct PatternGraph {
 /// Direction for AQL graph traversal
 #[derive(Debug, Clone, PartialEq)]
 pub enum TraversalDirection {
-    Outbound,     // OUTBOUND
-    Inbound,      // INBOUND  
-    Any,          // ANY (for bidirectional edges)
+    Outbound, // OUTBOUND
+    Inbound,  // INBOUND
+    Any,      // ANY (for bidirectional edges)
 }
 
 /// Index structure for efficient graph traversal
@@ -209,7 +209,7 @@ impl EdgeIndex {
                     // source -> target
                     outgoing[source_idx].push(target_idx);
                     incoming[target_idx].push(source_idx);
-                    
+
                     // For undirected connectivity, add both directions
                     undirected[source_idx].push(target_idx);
                     undirected[target_idx].push(source_idx);
@@ -218,7 +218,7 @@ impl EdgeIndex {
                     // target -> source (inbound from source perspective)
                     outgoing[target_idx].push(source_idx);
                     incoming[source_idx].push(target_idx);
-                    
+
                     // For undirected connectivity, add both directions
                     undirected[source_idx].push(target_idx);
                     undirected[target_idx].push(source_idx);
@@ -229,7 +229,7 @@ impl EdgeIndex {
                     outgoing[target_idx].push(source_idx);
                     incoming[source_idx].push(target_idx);
                     incoming[target_idx].push(source_idx);
-                    
+
                     // For undirected connectivity, add both directions
                     undirected[source_idx].push(target_idx);
                     undirected[target_idx].push(source_idx);
@@ -351,7 +351,13 @@ impl PatternGraph {
     /// Converts to the old tuple format for backward compatibility
     /// Note: This method only works with ProperPath variants and will panic on VertexPath variants
     #[allow(dead_code)]
-    pub fn into_tuple(self) -> (Vec<PatternVertex>, Vec<PatternEdge>, HashMap<String, Vec<usize>>) {
+    pub fn into_tuple(
+        self,
+    ) -> (
+        Vec<PatternVertex>,
+        Vec<PatternEdge>,
+        HashMap<String, Vec<usize>>,
+    ) {
         let mut old_paths = HashMap::new();
         for (name, path) in self.paths.paths {
             match path {
@@ -359,7 +365,9 @@ impl PatternGraph {
                     old_paths.insert(name, edges);
                 }
                 PatternPath::VertexPath(_) => {
-                    panic!("Cannot convert VertexPath to old tuple format - use new PatternPath enum instead");
+                    panic!(
+                        "Cannot convert VertexPath to old tuple format - use new PatternPath enum instead"
+                    );
                 }
             }
         }
@@ -369,7 +377,11 @@ impl PatternGraph {
     /// Creates a PatternGraph from the old tuple format
     #[allow(dead_code)]
     pub fn from_tuple(
-        tuple: (Vec<PatternVertex>, Vec<PatternEdge>, HashMap<String, Vec<usize>>),
+        tuple: (
+            Vec<PatternVertex>,
+            Vec<PatternEdge>,
+            HashMap<String, Vec<usize>>,
+        ),
     ) -> Self {
         let (vertices, edges, path_map) = tuple;
         let mut converted_paths = HashMap::new();
@@ -386,7 +398,6 @@ impl PatternGraph {
         }
     }
 
-
     /// Creates an EdgeIndex for this pattern graph
     pub fn create_edge_index(&self) -> EdgeIndex {
         EdgeIndex::new(&self.vertices, &self.edges)
@@ -395,7 +406,7 @@ impl PatternGraph {
     /// Check if the pattern graph is connected when viewed as an undirected graph
     pub fn is_connected(&self) -> bool {
         let edge_index = self.create_edge_index();
-        
+
         // Empty graph is considered connected
         if self.vertices.is_empty() {
             return true;
@@ -428,16 +439,18 @@ impl PatternGraph {
         visited.len() == self.vertices.len()
     }
 
-
     /// Build a spanning tree using breadth-first search from a starting vertex
     /// Returns a list of edges in the spanning tree in the order they should be traversed
-    /// 
+    ///
     /// # Arguments
     /// * `start_vertex` - Index of the starting vertex for BFS
-    /// 
+    ///
     /// # Returns
     /// * `Result<Vec<SpanningTreeEdge>, String>` - Ordered list of spanning tree edges or error
-    pub fn build_spanning_tree(&self, start_vertex: usize) -> Result<Vec<SpanningTreeEdge>, String> {
+    pub fn build_spanning_tree(
+        &self,
+        start_vertex: usize,
+    ) -> Result<Vec<SpanningTreeEdge>, String> {
         if start_vertex >= self.vertices.len() {
             return Err("Start vertex index out of bounds".to_string());
         }
@@ -468,20 +481,38 @@ impl PatternGraph {
             match edge.direction {
                 RelationshipDirection::Outbound => {
                     // source -> target, so traversal is OUTBOUND from source to target
-                    edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Outbound));
+                    edge_lookup.insert(
+                        (source_idx, target_idx),
+                        (edge_idx, TraversalDirection::Outbound),
+                    );
                     // For reverse direction (target to source), traversal is INBOUND
-                    edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Inbound));
+                    edge_lookup.insert(
+                        (target_idx, source_idx),
+                        (edge_idx, TraversalDirection::Inbound),
+                    );
                 }
                 RelationshipDirection::Inbound => {
                     // source <- target, so traversal is INBOUND from target to source
-                    edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Outbound));
-                    // For reverse direction (source to target), traversal is INBOUND  
-                    edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Inbound));
+                    edge_lookup.insert(
+                        (target_idx, source_idx),
+                        (edge_idx, TraversalDirection::Outbound),
+                    );
+                    // For reverse direction (source to target), traversal is INBOUND
+                    edge_lookup.insert(
+                        (source_idx, target_idx),
+                        (edge_idx, TraversalDirection::Inbound),
+                    );
                 }
                 RelationshipDirection::Bidirectional => {
                     // Both directions are ANY
-                    edge_lookup.insert((source_idx, target_idx), (edge_idx, TraversalDirection::Any));
-                    edge_lookup.insert((target_idx, source_idx), (edge_idx, TraversalDirection::Any));
+                    edge_lookup.insert(
+                        (source_idx, target_idx),
+                        (edge_idx, TraversalDirection::Any),
+                    );
+                    edge_lookup.insert(
+                        (target_idx, source_idx),
+                        (edge_idx, TraversalDirection::Any),
+                    );
                 }
             }
         }
@@ -498,7 +529,9 @@ impl PatternGraph {
                     queue.push_back(neighbor_idx);
 
                     // Find the edge information for this traversal
-                    if let Some((edge_idx, traversal_direction)) = edge_lookup.get(&(current_vertex_idx, neighbor_idx)) {
+                    if let Some((edge_idx, traversal_direction)) =
+                        edge_lookup.get(&(current_vertex_idx, neighbor_idx))
+                    {
                         spanning_tree_edges.push(SpanningTreeEdge {
                             from_vertex: current_vertex_idx,
                             to_vertex: neighbor_idx,
@@ -554,9 +587,19 @@ pub fn make_match_graph(
     }
 
     let pattern = unsafe { cypher_astnode_get_child(match_node, 0) };
-    process_pattern(pattern, &mut vertices, &mut edges, &mut node_counter, &mut rel_counter, &mut path_counter, &mut path_edge_mapping)?;
+    process_pattern(
+        pattern,
+        &mut vertices,
+        &mut edges,
+        &mut node_counter,
+        &mut rel_counter,
+        &mut path_counter,
+        &mut path_edge_mapping,
+    )?;
 
-    let paths = PatternPaths { paths: path_edge_mapping };
+    let paths = PatternPaths {
+        paths: path_edge_mapping,
+    };
     Ok(PatternGraph::from_components(vertices, edges, paths))
 }
 
@@ -584,7 +627,15 @@ fn process_pattern(
         let n_children = unsafe { cypher_astnode_nchildren(pattern) };
         for i in 0..n_children {
             let child = unsafe { cypher_astnode_get_child(pattern, i) };
-            process_pattern(child, vertices, edges, node_counter, rel_counter, path_counter, path_edge_mapping)?;
+            process_pattern(
+                child,
+                vertices,
+                edges,
+                node_counter,
+                rel_counter,
+                path_counter,
+                path_edge_mapping,
+            )?;
         }
     } else if pattern_type == cypher_named_path {
         // Named path - get the path name from the first child and actual path from the second child
@@ -592,20 +643,20 @@ fn process_pattern(
         if n_children >= 2 {
             let path_name_node = unsafe { cypher_astnode_get_child(pattern, 0) };
             let path = unsafe { cypher_astnode_get_child(pattern, 1) };
-            
+
             // Extract the path name
             let path_name = extract_identifier(path_name_node).unwrap_or_else(|| {
                 *path_counter += 1;
                 format!("path{}", *path_counter)
             });
-            
+
             // Process the pattern path and collect edge indices
             let edges_start_index = edges.len();
             let vertices_start_index = vertices.len();
             process_pattern_path(path, vertices, edges, node_counter, rel_counter)?;
             let edges_end_index = edges.len();
             let vertices_end_index = vertices.len();
-            
+
             // Determine if this is a vertex-only path or a proper path with edges
             if edges_start_index == edges_end_index {
                 // No edges were added - this is a vertex-only path
@@ -629,13 +680,13 @@ fn process_pattern(
         // Anonymous path - invent a name
         *path_counter += 1;
         let path_name = format!("path{}", *path_counter);
-        
+
         let edges_start_index = edges.len();
         let vertices_start_index = vertices.len();
         process_pattern_path(pattern, vertices, edges, node_counter, rel_counter)?;
         let edges_end_index = edges.len();
         let vertices_end_index = vertices.len();
-        
+
         // Determine if this is a vertex-only path or a proper path with edges
         if edges_start_index == edges_end_index {
             // No edges were added - this is a vertex-only path
@@ -658,13 +709,13 @@ fn process_pattern(
         // Try to process as pattern path anyway with invented name
         *path_counter += 1;
         let path_name = format!("path{}", *path_counter);
-        
+
         let edges_start_index = edges.len();
         let vertices_start_index = vertices.len();
         process_pattern_path(pattern, vertices, edges, node_counter, rel_counter)?;
         let edges_end_index = edges.len();
         let vertices_end_index = vertices.len();
-        
+
         // Determine if this is a vertex-only path or a proper path with edges
         if edges_start_index == edges_end_index {
             // No edges were added - this is a vertex-only path
@@ -690,17 +741,14 @@ fn process_pattern(
 
 /// Helper function to ensure a vertex exists in the vertices collection
 /// Returns the identifier of the vertex (either found or newly created)
-fn ensure_vertex_exists(
-    vertices: &mut Vec<PatternVertex>,
-    vertex: PatternVertex,
-) -> String {
+fn ensure_vertex_exists(vertices: &mut Vec<PatternVertex>, vertex: PatternVertex) -> String {
     let identifier = vertex.identifier.clone();
-    
+
     // Check if vertex with this identifier already exists
     if !vertices.iter().any(|v| v.identifier == identifier) {
         vertices.push(vertex);
     }
-    
+
     identifier
 }
 
@@ -716,31 +764,32 @@ fn find_vertex_in_pattern(
 
     let n_children = unsafe { cypher_astnode_nchildren(pattern_path) };
     let cypher_node_pattern = unsafe { CYPHER_AST_NODE_PATTERN };
-    
+
     // Look for the first (and should be only) node pattern
     for i in 0..n_children {
         let child = unsafe { cypher_astnode_get_child(pattern_path, i) };
         let child_type = unsafe { cypher_astnode_type(child) };
-        
+
         if child_type == cypher_node_pattern {
             // Extract the vertex identifier
-            let vertex_identifier = if let Some(id) = extract_vertex_identifier_from_node_pattern(child) {
-                id
-            } else {
-                return Err(GraphError::InvalidIdentifier);
-            };
-            
+            let vertex_identifier =
+                if let Some(id) = extract_vertex_identifier_from_node_pattern(child) {
+                    id
+                } else {
+                    return Err(GraphError::InvalidIdentifier);
+                };
+
             // Find the vertex in the vertices list
             for (index, vertex) in vertices.iter().enumerate() {
                 if vertex.identifier == vertex_identifier {
                     return Ok(index);
                 }
             }
-            
+
             return Err(GraphError::InvalidIdentifier);
         }
     }
-    
+
     Err(GraphError::UnsupportedPattern)
 }
 
@@ -752,7 +801,7 @@ fn extract_vertex_identifier_from_node_pattern(node: *const cypher_astnode_t) ->
 
     let n_children = unsafe { cypher_astnode_nchildren(node) };
     let cypher_identifier = unsafe { CYPHER_AST_IDENTIFIER };
-    
+
     for i in 0..n_children {
         let child = unsafe { cypher_astnode_get_child(node, i) };
         if child.is_null() {
@@ -764,7 +813,7 @@ fn extract_vertex_identifier_from_node_pattern(node: *const cypher_astnode_t) ->
             return extract_identifier(child);
         }
     }
-    
+
     None
 }
 
@@ -808,8 +857,12 @@ fn process_pattern_path(
                         let target_id = target_vertex.identifier.clone();
 
                         // Process the relationship
-                        let edge =
-                            process_relationship_pattern(child, source_id.clone(), target_id, rel_counter)?;
+                        let edge = process_relationship_pattern(
+                            child,
+                            source_id.clone(),
+                            target_id,
+                            rel_counter,
+                        )?;
                         edges.push(edge);
 
                         current_node_id = Some(ensure_vertex_exists(vertices, target_vertex));
@@ -1255,7 +1308,7 @@ pub fn print_pattern_graph(graph: &PatternGraph) {
                 format!("Vertex: {}", vertex.identifier)
             };
             println!("{vertex_info}");
-            
+
             // Print properties on second line
             if vertex.properties.is_empty() {
                 println!("  Properties: (none)");
@@ -1286,35 +1339,53 @@ pub fn print_pattern_graph(graph: &PatternGraph) {
                 (None, Some(max)) => format!("{{..{max}}}"),
                 (None, None) => "".to_string(),
             };
-            
+
             // Print edge information on first line in Cypher format
             let edge_info = if let Some(ref rel_type) = edge.rel_type {
                 match edge.direction {
                     RelationshipDirection::Outbound => {
-                        format!("Edge: {} -[{}:{}{}]-> {}", edge.source, edge.identifier, rel_type, depth_info, edge.target)
+                        format!(
+                            "Edge: {} -[{}:{}{}]-> {}",
+                            edge.source, edge.identifier, rel_type, depth_info, edge.target
+                        )
                     }
                     RelationshipDirection::Inbound => {
-                        format!("Edge: {} <-[{}:{}{}]- {}", edge.source, edge.identifier, rel_type, depth_info, edge.target)
+                        format!(
+                            "Edge: {} <-[{}:{}{}]- {}",
+                            edge.source, edge.identifier, rel_type, depth_info, edge.target
+                        )
                     }
                     RelationshipDirection::Bidirectional => {
-                        format!("Edge: {} -[{}:{}{}]- {}", edge.source, edge.identifier, rel_type, depth_info, edge.target)
+                        format!(
+                            "Edge: {} -[{}:{}{}]- {}",
+                            edge.source, edge.identifier, rel_type, depth_info, edge.target
+                        )
                     }
                 }
             } else {
                 match edge.direction {
                     RelationshipDirection::Outbound => {
-                        format!("Edge: {} -[{}{}]-> {}", edge.source, edge.identifier, depth_info, edge.target)
+                        format!(
+                            "Edge: {} -[{}{}]-> {}",
+                            edge.source, edge.identifier, depth_info, edge.target
+                        )
                     }
                     RelationshipDirection::Inbound => {
-                        format!("Edge: {} <-[{}{}]- {}", edge.source, edge.identifier, depth_info, edge.target)
+                        format!(
+                            "Edge: {} <-[{}{}]- {}",
+                            edge.source, edge.identifier, depth_info, edge.target
+                        )
                     }
                     RelationshipDirection::Bidirectional => {
-                        format!("Edge: {} -[{}{}]- {}", edge.source, edge.identifier, depth_info, edge.target)
+                        format!(
+                            "Edge: {} -[{}{}]- {}",
+                            edge.source, edge.identifier, depth_info, edge.target
+                        )
                     }
                 }
             };
             println!("{edge_info}");
-            
+
             // Print depth information on second line
             let depth_display = match (edge.min_depth, edge.max_depth) {
                 (Some(min), Some(max)) if min == max => format!("Depth: {min}"),
@@ -1324,7 +1395,7 @@ pub fn print_pattern_graph(graph: &PatternGraph) {
                 (None, None) => "Depth: unbounded".to_string(),
             };
             println!("  {depth_display}");
-            
+
             // Print properties on third line
             if edge.properties.is_empty() {
                 println!("  Properties: (none)");
@@ -1343,494 +1414,5 @@ pub fn print_pattern_graph(graph: &PatternGraph) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::CString;
-    use std::ptr;
-    use std::os::raw::c_char;
-
-    /// Helper function to parse a Cypher query and return the parse result
-    fn parse_cypher_query(query: &str) -> *const cypher_parse_result_t {
-        let c_query = CString::new(query).expect("Failed to create CString");
-        let config = unsafe { cypher_parser_new_config() };
-        assert!(!config.is_null(), "Failed to create parser config");
-
-        let result = unsafe {
-            cypher_uparse(
-                c_query.as_ptr().cast::<c_char>(),
-                c_query.as_bytes().len() as u64,
-                ptr::null_mut(),
-                config,
-                u64::from(CYPHER_PARSE_DEFAULT),
-            )
-        };
-
-        unsafe {
-            cypher_parser_config_free(config);
-        }
-
-        result
-    }
-
-    /// Helper function to clean up parse result
-    fn cleanup_parse_result(result: *const cypher_parse_result_t) {
-        if !result.is_null() {
-            unsafe {
-                cypher_parse_result_free(result as *mut cypher_parse_result_t);
-            }
-        }
-    }
-
-    // Helper function to find a map node in a parsed query
-    fn find_map_node_in_query(
-        result: *const cypher_parse_result_t,
-    ) -> Option<*const cypher_astnode_t> {
-        if result.is_null() {
-            return None;
-        }
-
-        let n_roots = unsafe { cypher_parse_result_nroots(result) };
-        for i in 0..n_roots {
-            let root = unsafe { cypher_parse_result_get_root(result, i) };
-            if let Some(map_node) = find_map_node_recursive(root) {
-                return Some(map_node);
-            }
-        }
-
-        None
-    }
-
-    // Recursively search for a map node in the AST
-    fn find_map_node_recursive(node: *const cypher_astnode_t) -> Option<*const cypher_astnode_t> {
-        if node.is_null() {
-            return None;
-        }
-
-        let node_type = unsafe { cypher_astnode_type(node) };
-        let cypher_map = unsafe { CYPHER_AST_MAP };
-
-        if node_type == cypher_map {
-            return Some(node);
-        }
-
-        // Recursively search children
-        let n_children = unsafe { cypher_astnode_nchildren(node) };
-        for i in 0..n_children {
-            let child = unsafe { cypher_astnode_get_child(node, i) };
-            if let Some(map_node) = find_map_node_recursive(child) {
-                return Some(map_node);
-            }
-        }
-
-        None
-    }
-
-    #[test]
-    fn test_pattern_vertex_creation() {
-        let vertex = PatternVertex {
-            identifier: "n".to_string(),
-            label: Some("Person".to_string()),
-            properties: {
-                let mut props = HashMap::new();
-                props.insert("name".to_string(), Value::String("Alice".to_string()));
-                props
-            },
-        };
-
-        assert_eq!(vertex.identifier, "n");
-        assert_eq!(vertex.label, Some("Person".to_string()));
-        assert_eq!(vertex.properties.get("name"), Some(&Value::String("Alice".to_string())));
-    }
-
-    #[test]
-    fn test_pattern_edge_creation() {
-        let edge = PatternEdge {
-            identifier: "r".to_string(),
-            source: "a".to_string(),
-            target: "b".to_string(),
-            rel_type: Some("KNOWS".to_string()),
-            properties: HashMap::new(),
-            direction: RelationshipDirection::Outbound,
-            min_depth: Some(1),
-            max_depth: Some(1),
-        };
-
-        assert_eq!(edge.identifier, "r");
-        assert_eq!(edge.source, "a");
-        assert_eq!(edge.target, "b");
-        assert_eq!(edge.rel_type, Some("KNOWS".to_string()));
-        assert_eq!(edge.direction, RelationshipDirection::Outbound);
-    }
-
-    #[test]
-    fn test_extract_properties_null_input() {
-        let result = extract_properties(ptr::null());
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_properties_non_map_node() {
-        // Test with a non-map AST node (should return None)
-        let query = "MATCH (n) RETURN n";
-        let result = parse_cypher_query(query);
-
-        if !result.is_null() {
-            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
-            if n_errors == 0 {
-                let n_roots = unsafe { cypher_parse_result_nroots(result) };
-                if n_roots > 0 {
-                    let root = unsafe { cypher_parse_result_get_root(result, 0) };
-                    if !root.is_null() {
-                        // Root node is not a map, should return None
-                        let properties = extract_properties(root);
-                        assert_eq!(properties, None);
-                    }
-                }
-            }
-        }
-
-        cleanup_parse_result(result);
-    }
-
-    #[test]
-    fn test_extract_properties_empty_map() {
-        let query = "MATCH (n {}) RETURN n";
-        let result = parse_cypher_query(query);
-
-        if !result.is_null() {
-            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
-            if n_errors == 0 {
-                if let Some(map_node) = find_map_node_in_query(result) {
-                    let properties = extract_properties(map_node);
-                    assert!(properties.is_some());
-                    let props = properties.unwrap();
-                    assert_eq!(props.len(), 0);
-                }
-            }
-        }
-
-        cleanup_parse_result(result);
-    }
-
-    #[test]
-    fn test_extract_properties_string_values() {
-        let query = "MATCH (n {name: 'Alice', city: 'Wonderland'}) RETURN n";
-        let result = parse_cypher_query(query);
-
-        if !result.is_null() {
-            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
-            if n_errors == 0 {
-                if let Some(map_node) = find_map_node_in_query(result) {
-                    let properties = extract_properties(map_node);
-                    assert!(properties.is_some());
-                    let props = properties.unwrap();
-                    assert_eq!(props.len(), 2);
-                    assert_eq!(props.get("name"), Some(&Value::String("Alice".to_string())));
-                    assert_eq!(props.get("city"), Some(&Value::String("Wonderland".to_string())));
-                }
-            }
-        }
-
-        cleanup_parse_result(result);
-    }
-
-    #[test]
-    fn test_extract_properties_integer_values() {
-        let query = "MATCH (n {age: 30, count: 42}) RETURN n";
-        let result = parse_cypher_query(query);
-
-        if !result.is_null() {
-            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
-            if n_errors == 0 {
-                if let Some(map_node) = find_map_node_in_query(result) {
-                    let properties = extract_properties(map_node);
-                    assert!(properties.is_some());
-                    let props = properties.unwrap();
-                    assert_eq!(props.len(), 2);
-                    assert_eq!(props.get("age"), Some(&Value::Number(serde_json::Number::from(30))));
-                    assert_eq!(props.get("count"), Some(&Value::Number(serde_json::Number::from(42))));
-                }
-            }
-        }
-
-        cleanup_parse_result(result);
-    }
-
-    #[test]
-    fn test_extract_properties_boolean_values() {
-        let query = "MATCH (n {active: true, deleted: false}) RETURN n";
-        let result = parse_cypher_query(query);
-
-        if !result.is_null() {
-            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
-            if n_errors == 0 {
-                if let Some(map_node) = find_map_node_in_query(result) {
-                    let properties = extract_properties(map_node);
-                    assert!(properties.is_some());
-                    let props = properties.unwrap();
-                    assert_eq!(props.len(), 2);
-                    assert_eq!(props.get("active"), Some(&Value::Bool(true)));
-                    assert_eq!(props.get("deleted"), Some(&Value::Bool(false)));
-                }
-            }
-        }
-
-        cleanup_parse_result(result);
-    }
-
-    #[test]
-    fn test_extract_properties_float_values() {
-        let query = "MATCH (n {height: 5.9, weight: 70.5}) RETURN n";
-        let result = parse_cypher_query(query);
-
-        if !result.is_null() {
-            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
-            if n_errors == 0 {
-                if let Some(map_node) = find_map_node_in_query(result) {
-                    let properties = extract_properties(map_node);
-                    assert!(properties.is_some());
-                    let props = properties.unwrap();
-                    assert_eq!(props.len(), 2);
-                    assert_eq!(props.get("height"), Some(&Value::Number(serde_json::Number::from_f64(5.9).unwrap())));
-                    assert_eq!(props.get("weight"), Some(&Value::Number(serde_json::Number::from_f64(70.5).unwrap())));
-                }
-            }
-        }
-
-        cleanup_parse_result(result);
-    }
-
-    #[test]
-    fn test_extract_properties_mixed_types() {
-        let query = "MATCH (n {name: 'Alice', age: 30, active: true, score: 95.5}) RETURN n";
-        let result = parse_cypher_query(query);
-
-        if !result.is_null() {
-            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
-            if n_errors == 0 {
-                if let Some(map_node) = find_map_node_in_query(result) {
-                    let properties = extract_properties(map_node);
-                    assert!(properties.is_some());
-                    let props = properties.unwrap();
-                    assert_eq!(props.len(), 4);
-                    assert_eq!(props.get("name"), Some(&Value::String("Alice".to_string())));
-                    assert_eq!(props.get("age"), Some(&Value::Number(serde_json::Number::from(30))));
-                    assert_eq!(props.get("active"), Some(&Value::Bool(true)));
-                    assert_eq!(props.get("score"), Some(&Value::Number(serde_json::Number::from_f64(95.5).unwrap())));
-                }
-            }
-        }
-
-        cleanup_parse_result(result);
-    }
-
-    #[test]
-    fn test_extract_properties_null_values() {
-        let query = "MATCH (n {optional: null}) RETURN n";
-        let result = parse_cypher_query(query);
-
-        if !result.is_null() {
-            let n_errors = unsafe { cypher_parse_result_nerrors(result) };
-            if n_errors == 0 {
-                if let Some(map_node) = find_map_node_in_query(result) {
-                    let properties = extract_properties(map_node);
-                    assert!(properties.is_some());
-                    let props = properties.unwrap();
-                    assert_eq!(props.len(), 1);
-                    assert_eq!(props.get("optional"), Some(&Value::Null));
-                }
-            }
-        }
-
-        cleanup_parse_result(result);
-    }
-
-    #[test]
-    fn test_extract_property_name_helper() {
-        // Test the helper function directly with null input
-        let result = extract_property_name(ptr::null());
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_expression_value_helper() {
-        // Test the helper function directly with null input
-        let result = extract_expression_value(ptr::null());
-        assert_eq!(result, None);
-    }
-
-    // Helper function to find MATCH clause in AST recursively
-    fn find_match_clause(node: *const cypher_astnode_t) -> Option<*const cypher_astnode_t> {
-        if node.is_null() {
-            return None;
-        }
-
-        let node_type = unsafe { cypher_astnode_type(node) };
-        let cypher_match = unsafe { CYPHER_AST_MATCH };
-        if node_type == cypher_match {
-            return Some(node);
-        }
-
-        // Recursively search children
-        let n_children = unsafe { cypher_astnode_nchildren(node) };
-        for i in 0..n_children {
-            let child = unsafe { cypher_astnode_get_child(node, i) };
-            if let Some(match_node) = find_match_clause(child) {
-                return Some(match_node);
-            }
-        }
-
-        None
-    }
-
-    /// Helper function to parse a Cypher query and extract the match graph
-    fn parse_and_extract_match_graph(query: &str) -> Result<PatternGraph, GraphError> {
-        let result = parse_cypher_query(query);
-        
-        if result.is_null() {
-            cleanup_parse_result(result);
-            return Err(GraphError::InvalidAstNode);
-        }
-
-        let n_errors = unsafe { cypher_parse_result_nerrors(result) };
-        if n_errors > 0 {
-            cleanup_parse_result(result);
-            return Err(GraphError::InvalidAstNode);
-        }
-
-        let n_roots = unsafe { cypher_parse_result_nroots(result) };
-        if n_roots == 0 {
-            cleanup_parse_result(result);
-            return Err(GraphError::InvalidAstNode);
-        }
-
-        let root = unsafe { cypher_parse_result_get_root(result, 0) };
-        
-        // Find the MATCH clause within the AST
-        let match_clause = find_match_clause(root);
-        
-        let graph_result = match match_clause {
-            Some(match_node) => make_match_graph(match_node),
-            None => Err(GraphError::UnsupportedPattern),
-        };
-        
-        cleanup_parse_result(result);
-        graph_result
-    }
-
-    #[test]
-    fn test_connectivity_with_shared_vertices_regression() {
-        // Regression test for the duplicate vertex issue
-        // This query should create a connected graph with 3 vertices, not 4
-        // The vertex v1 appears in both paths p1 and p2 and should be deduplicated
-        let query = "MATCH p1 = (v1) -[e]-> (v2), p2 = (v1) -[f]-> (v3)";
-        
-        let graph_result = parse_and_extract_match_graph(query);
-        assert!(graph_result.is_ok(), "Failed to parse query: {:?}", graph_result.err());
-        
-        let graph = graph_result.unwrap();
-        
-        // Verify correct vertex count - should be 3, not 4 (v1 should be deduplicated)
-        assert_eq!(graph.vertices.len(), 3, "Expected 3 vertices, got {}", graph.vertices.len());
-        
-        // Verify we have the expected vertices
-        let vertex_ids: HashSet<String> = graph.vertices.iter().map(|v| v.identifier.clone()).collect();
-        let expected_ids: HashSet<String> = ["v1", "v2", "v3"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(vertex_ids, expected_ids, "Vertex identifiers don't match expected set");
-        
-        // Verify edge count
-        assert_eq!(graph.edges.len(), 2, "Expected 2 edges, got {}", graph.edges.len());
-        
-        // Verify path count
-        assert_eq!(graph.paths.len(), 2, "Expected 2 paths, got {}", graph.paths.len());
-        
-        // Most importantly: verify the graph is connected
-        assert!(graph.is_connected(), "Graph should be connected but connectivity check failed");
-        
-        // Verify the edges connect the right vertices
-        let edge_pairs: HashSet<(String, String)> = graph.edges.iter()
-            .map(|e| (e.source.clone(), e.target.clone()))
-            .collect();
-        let expected_pairs: HashSet<(String, String)> = [
-            ("v1".to_string(), "v2".to_string()),
-            ("v1".to_string(), "v3".to_string())
-        ].iter().cloned().collect();
-        assert_eq!(edge_pairs, expected_pairs, "Edge connections don't match expected pairs");
-    }
-
-    #[test] 
-    fn test_connectivity_multiple_shared_vertices() {
-        // Test a more complex case with multiple shared vertices
-        let query = "MATCH p1 = (a) -[r1]-> (b) -[r2]-> (c), p2 = (a) -[r3]-> (d), p3 = (b) -[r4]-> (e)";
-        
-        let graph_result = parse_and_extract_match_graph(query);
-        assert!(graph_result.is_ok(), "Failed to parse query: {:?}", graph_result.err());
-        
-        let graph = graph_result.unwrap();
-        
-        // Should have 5 unique vertices: a, b, c, d, e
-        assert_eq!(graph.vertices.len(), 5, "Expected 5 vertices, got {}", graph.vertices.len());
-        
-        // Verify we have the expected vertices
-        let vertex_ids: HashSet<String> = graph.vertices.iter().map(|v| v.identifier.clone()).collect();
-        let expected_ids: HashSet<String> = ["a", "b", "c", "d", "e"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(vertex_ids, expected_ids, "Vertex identifiers don't match expected set");
-        
-        // Should have 4 edges
-        assert_eq!(graph.edges.len(), 4, "Expected 4 edges, got {}", graph.edges.len());
-        
-        // Should be connected
-        assert!(graph.is_connected(), "Graph should be connected but connectivity check failed");
-    }
-
-    #[test]
-    fn test_connectivity_single_vertex_multiple_paths() {
-        // Edge case: single vertex appearing in multiple named paths
-        let query = "MATCH p1 = (n), p2 = (n)";
-        
-        let graph_result = parse_and_extract_match_graph(query);
-        assert!(graph_result.is_ok(), "Failed to parse query: {:?}", graph_result.err());
-        
-        let graph = graph_result.unwrap();
-        
-        // Should have only 1 vertex (n should be deduplicated)
-        assert_eq!(graph.vertices.len(), 1, "Expected 1 vertex, got {}", graph.vertices.len());
-        assert_eq!(graph.vertices[0].identifier, "n");
-        
-        // No edges
-        assert_eq!(graph.edges.len(), 0, "Expected 0 edges, got {}", graph.edges.len());
-        
-        // Single vertex is considered connected
-        assert!(graph.is_connected(), "Single vertex graph should be connected");
-    }
-
-    #[test]
-    fn test_connectivity_star_pattern() {
-        // Test a star pattern where one central vertex connects to multiple others
-        let query = "MATCH p1 = (center) -[r1]-> (a), p2 = (center) -[r2]-> (b), p3 = (center) -[r3]-> (c)";
-        
-        let graph_result = parse_and_extract_match_graph(query);
-        assert!(graph_result.is_ok(), "Failed to parse query: {:?}", graph_result.err());
-        
-        let graph = graph_result.unwrap();
-        
-        // Should have 4 unique vertices: center, a, b, c
-        assert_eq!(graph.vertices.len(), 4, "Expected 4 vertices, got {}", graph.vertices.len());
-        
-        // Verify we have the expected vertices
-        let vertex_ids: HashSet<String> = graph.vertices.iter().map(|v| v.identifier.clone()).collect();
-        let expected_ids: HashSet<String> = ["center", "a", "b", "c"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(vertex_ids, expected_ids, "Vertex identifiers don't match expected set");
-        
-        // Should have 3 edges
-        assert_eq!(graph.edges.len(), 3, "Expected 3 edges, got {}", graph.edges.len());
-        
-        // Should be connected
-        assert!(graph.is_connected(), "Star pattern graph should be connected");
-        
-        // Verify all edges have 'center' as source
-        for edge in &graph.edges {
-            assert_eq!(edge.source, "center", "All edges should originate from center vertex");
-        }
-    }
-}
+#[path = "tests_pattern_graph.rs"]
+mod tests_pattern_graph;
