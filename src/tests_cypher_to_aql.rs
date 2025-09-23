@@ -237,7 +237,7 @@ fn test_generate_edge_traversal_outbound() {
 
     let mut indent = 1;
     let traversal =
-        generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent).unwrap();
+        generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent, &crate::config::Config::default()).unwrap();
 
     assert_eq!(
         traversal.content,
@@ -269,7 +269,7 @@ fn test_generate_edge_traversal_inbound() {
 
     let mut indent = 1;
     let traversal =
-        generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent).unwrap();
+        generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent, &crate::config::Config::default()).unwrap();
 
     assert_eq!(traversal.content, "FOR a, a_b IN 1..1 INBOUND b._id FRIEND");
     assert_eq!(traversal.indent, 1);
@@ -298,7 +298,7 @@ fn test_generate_edge_traversal_any() {
 
     let mut indent = 1;
     let traversal =
-        generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent).unwrap();
+        generate_edge_traversal(&spanning_edge, &vertices, &edges, &mut indent, &crate::config::Config::default()).unwrap();
 
     assert_eq!(traversal.content, "FOR b, a_b IN 1..1 ANY a._id FRIEND");
     assert_eq!(traversal.indent, 1);
@@ -317,10 +317,11 @@ fn test_match_to_aql_with_edges() {
     let pattern_graph =
         PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
 
-    let (aql_lines, _current_indent) = match_to_aql(&pattern_graph).unwrap();
+    let config = crate::config::Config::default();
+    let (aql_lines, _current_indent) = match_to_aql(&pattern_graph, &config).unwrap();
 
     assert_eq!(aql_lines.len(), 2);
-    assert_eq!(aql_lines[0].content, "FOR user IN vertices");
+    assert_eq!(aql_lines[0].content, "FOR user IN VERTICES");
     assert_eq!(aql_lines[0].indent, 0);
     assert_eq!(aql_lines[0].exposed_variables, vec!["user"]);
     assert_eq!(
@@ -347,12 +348,10 @@ fn test_edge_collection_name_error() {
         max_depth: Some(1),
     };
 
-    let result = derive_edge_collection_name(&edge);
-    assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err(),
-        "Edge type is required but not specified"
-    );
+    let config = crate::config::Config::default();
+    let result = derive_edge_collection_name(&edge, &config);
+    // With the new config system, empty/no edge type uses fallback
+    assert_eq!(result, "EDGES"); // fallback edge collection from default config
 }
 
 #[test]
@@ -388,14 +387,15 @@ fn test_path_identifier_in_return() {
     };
 
     // Generate complete AQL query
-    let result = generate_complete_aql(&pattern_graph, &return_clause);
+    let config = crate::config::Config::default();
+    let result = generate_complete_aql(&pattern_graph, &return_clause, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
 
     let aql_lines = result.unwrap();
     let query = format_aql_query(&aql_lines);
 
     // Verify the query contains path construction
-    assert!(query.contains("FOR user IN vertices"));
+    assert!(query.contains("FOR user IN VERTICES"));
     assert!(query.contains("FOR friend, user_friend IN 1..1 OUTBOUND user._id KNOWS"));
     assert!(
         query.contains("RETURN {mypath: {\"vertices\": [user, friend], \"edges\": [user_friend]}}")
@@ -430,14 +430,15 @@ fn test_vertex_only_path_in_return() {
     };
 
     // Generate complete AQL query
-    let result = generate_complete_aql(&pattern_graph, &return_clause);
+    let config = crate::config::Config::default();
+    let result = generate_complete_aql(&pattern_graph, &return_clause, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
 
     let aql_lines = result.unwrap();
     let query = format_aql_query(&aql_lines);
 
     // Verify the query contains vertex-only path construction
-    assert!(query.contains("FOR user IN vertices"));
+    assert!(query.contains("FOR user IN VERTICES"));
     assert!(query.contains("RETURN {mypath: {\"vertices\": [user], \"edges\": []}}"));
     // Should not contain any edge traversal
     assert!(!query.contains("OUTBOUND"));
@@ -562,7 +563,8 @@ fn test_multiple_vertex_paths_same_vertex() {
     };
 
     // Generate complete AQL query
-    let result = generate_complete_aql(&pattern_graph, &return_clause);
+    let config = crate::config::Config::default();
+    let result = generate_complete_aql(&pattern_graph, &return_clause, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
 
     let aql_lines = result.unwrap();
@@ -584,7 +586,8 @@ fn test_multi_hop_edge_traversal() {
     
     let pattern_graph = PatternGraph::from_components(vertices, edges.clone(), crate::pattern_graph::PatternPaths::new());
     
-    let result = match_to_aql(&pattern_graph);
+    let config = crate::config::Config::default();
+    let result = match_to_aql(&pattern_graph, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
     
     let (aql_lines, _) = result.unwrap();
@@ -607,7 +610,8 @@ fn test_multi_hop_edge_with_properties() {
     let edges = vec![edge];
     let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
     
-    let result = match_to_aql(&pattern_graph);
+    let config = crate::config::Config::default();
+    let result = match_to_aql(&pattern_graph, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
     
     let (aql_lines, _) = result.unwrap();
@@ -633,7 +637,8 @@ fn test_multi_hop_vertex_properties() {
     let edges = vec![create_multi_hop_edge("a", "b", RelationshipDirection::Outbound, 2, 4)];
     let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
     
-    let result = match_to_aql(&pattern_graph);
+    let config = crate::config::Config::default();
+    let result = match_to_aql(&pattern_graph, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
     
     let (aql_lines, _) = result.unwrap();
@@ -641,7 +646,7 @@ fn test_multi_hop_vertex_properties() {
     
     // The algorithm chooses b as anchor because it has properties
     // So we traverse INBOUND from b to a
-    assert!(query.contains("FOR b IN vertices"));
+    assert!(query.contains("FOR b IN VERTICES"));
     assert!(query.contains("FILTER b.name == 'test'"));
     assert!(query.contains("FOR a, a_b, _p_a_b IN 2..4 INBOUND b._id KNOWS"));
     // No additional FILTER needed for vertex a since it has no properties
@@ -660,7 +665,8 @@ fn test_multi_hop_without_edge_identifier() {
     let edges = vec![edge];
     let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
     
-    let result = match_to_aql(&pattern_graph);
+    let config = crate::config::Config::default();
+    let result = match_to_aql(&pattern_graph, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
     
     let (aql_lines, _) = result.unwrap();
@@ -684,7 +690,8 @@ fn test_single_hop_still_works() {
     let edges = vec![edge];
     let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
     
-    let result = match_to_aql(&pattern_graph);
+    let config = crate::config::Config::default();
+    let result = match_to_aql(&pattern_graph, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
     
     let (aql_lines, _) = result.unwrap();
@@ -715,14 +722,15 @@ fn test_multi_hop_with_target_vertex_filter() {
     let edges = vec![create_multi_hop_edge("a", "b", RelationshipDirection::Outbound, 2, 3)];
     let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
     
-    let result = match_to_aql(&pattern_graph);
+    let config = crate::config::Config::default();
+    let result = match_to_aql(&pattern_graph, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
     
     let (aql_lines, _) = result.unwrap();
     let query = format_aql_query(&aql_lines);
     
     // Vertex a has more properties, so it becomes the anchor
-    assert!(query.contains("FOR a IN vertices"));
+    assert!(query.contains("FOR a IN VERTICES"));
     // Check for both property filters (order may vary due to HashMap iteration)
     assert!(query.contains("a.id == 1"));
     assert!(query.contains("a.type == 'source'"));
@@ -750,7 +758,8 @@ fn test_multi_hop_with_prune_statement() {
     let edges = vec![create_multi_hop_edge("a", "b", RelationshipDirection::Outbound, 2, 4)];
     let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
     
-    let result = match_to_aql(&pattern_graph);
+    let config = crate::config::Config::default();
+    let result = match_to_aql(&pattern_graph, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
     
     let (aql_lines, _) = result.unwrap();
@@ -758,7 +767,7 @@ fn test_multi_hop_with_prune_statement() {
     
     // The algorithm should choose b as anchor because it has more properties (2 vs 1)
     // So we traverse INBOUND from b to a
-    assert!(query.contains("FOR b IN vertices"));
+    assert!(query.contains("FOR b IN VERTICES"));
     assert!(query.contains("FOR a, a_b, _p_a_b IN 2..4 INBOUND b._id KNOWS"));
     // Should generate PRUNE statement with inverted edge null check for target vertex a
     assert!(query.contains("PRUNE a_b != null && (a.type != 'source')"));
@@ -792,7 +801,8 @@ fn test_multi_hop_prune_without_edge_identifier() {
     let edges = vec![edge];
     let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
     
-    let result = match_to_aql(&pattern_graph);
+    let config = crate::config::Config::default();
+    let result = match_to_aql(&pattern_graph, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
     
     let (aql_lines, _) = result.unwrap();
@@ -800,7 +810,7 @@ fn test_multi_hop_prune_without_edge_identifier() {
     
     // The algorithm chooses a as anchor because it has more properties (3 vs 1)
     // So we traverse OUTBOUND from a to b (no edge variable)
-    assert!(query.contains("FOR a IN vertices"));
+    assert!(query.contains("FOR a IN VERTICES"));
     assert!(query.contains("FOR b, _p_b IN 1..3 OUTBOUND a._id KNOWS"));
     // Should generate PRUNE statement without edge null check for vertex b (inverted condition)
     assert!(query.contains("PRUNE b.status != 'active'"));
@@ -825,7 +835,8 @@ fn test_single_hop_no_prune() {
     let edges = vec![edge];
     let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
     
-    let result = match_to_aql(&pattern_graph);
+    let config = crate::config::Config::default();
+    let result = match_to_aql(&pattern_graph, &config);
     assert!(result.is_ok(), "Failed to generate AQL: {:?}", result.err());
     
     let (aql_lines, _) = result.unwrap();
@@ -833,7 +844,7 @@ fn test_single_hop_no_prune() {
     
     // The algorithm chooses b as anchor because it has properties
     // So we traverse INBOUND from b to a
-    assert!(query.contains("FOR b IN vertices"));
+    assert!(query.contains("FOR b IN VERTICES"));
     assert!(query.contains("FILTER b.name == 'test'"));
     assert!(query.contains("FOR a, a_b IN 1..1 INBOUND b._id KNOWS"));
     // Should NOT generate PRUNE statement for single-hop
@@ -859,7 +870,8 @@ fn test_final_multi_hop_output_example() {
     let edges = vec![create_multi_hop_edge("start", "end", RelationshipDirection::Outbound, 1, 4)];
     let pattern_graph = PatternGraph::from_components(vertices, edges, crate::pattern_graph::PatternPaths::new());
     
-    let result = match_to_aql(&pattern_graph);
+    let config = crate::config::Config::default();
+    let result = match_to_aql(&pattern_graph, &config);
     assert!(result.is_ok());
     
     let (aql_lines, _) = result.unwrap();
@@ -870,7 +882,7 @@ fn test_final_multi_hop_output_example() {
     println!("{}", query);
     
     // Algorithm chooses end as anchor (2 properties vs 1), so it traverses INBOUND
-    assert!(query.contains("FOR end IN vertices"));
+    assert!(query.contains("FOR end IN VERTICES"));
     assert!(query.contains("FOR start, start_end, _p_start_end IN 1..4 INBOUND end._id KNOWS"));
     assert!(query.contains("PRUNE start_end != null && (start.id != 1)"));
     assert!(query.contains("FILTER start.id == 1"));

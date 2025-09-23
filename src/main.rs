@@ -1,4 +1,4 @@
-use std::env;
+use clap::{Arg, Command};
 use std::ffi::CString;
 use std::fs;
 use std::os::raw::c_char;
@@ -9,9 +9,11 @@ use std::ptr;
 use libcypher_parser_sys::*;
 
 // Include our modules
+mod config;
 mod cypher;
 mod cypher_to_aql;
 mod pattern_graph;
+use config::Config;
 use cypher::{find_match_and_return_clauses, parse_return_clause};
 use cypher_to_aql::{format_aql_query, generate_complete_aql};
 use pattern_graph::{
@@ -19,15 +21,38 @@ use pattern_graph::{
 };
 
 fn main() {
-    // Get command line arguments
-    let args: Vec<String> = env::args().collect();
+    // Parse command line arguments with clap
+    let matches = Command::new("cypher-test")
+        .version("0.1.0")
+        .author("Max Neunhöffer")
+        .about("Converts Cypher queries to AQL")
+        .arg(
+            Arg::new("filename")
+                .help("The Cypher query file to process")
+                .required(true)
+                .index(1),
+        )
+        .arg(
+            Arg::new("config")
+                .long("config")
+                .short('c')
+                .help("Configuration file path")
+                .default_value("./config.json"),
+        )
+        .get_matches();
 
-    if args.len() != 2 {
-        eprintln!("Usage: {} <filename>", args[0]);
-        std::process::exit(1);
-    }
+    let filename = matches.get_one::<String>("filename").unwrap();
+    let config_path = matches.get_one::<String>("config").unwrap();
 
-    let filename = &args[1];
+    // Load configuration
+    let app_config = match Config::load_from_file(config_path) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Warning: Failed to load config file '{config_path}': {e}");
+            eprintln!("Using default configuration");
+            Config::default()
+        }
+    };
 
     // Read the file content
     let content = match fs::read_to_string(filename) {
@@ -243,7 +268,7 @@ fn main() {
                                 }
 
                                 // Generate complete AQL query with MATCH and RETURN
-                                match generate_complete_aql(&graph, &return_clause) {
+                                match generate_complete_aql(&graph, &return_clause, &app_config) {
                                     Ok(aql_lines) => {
                                         println!("\n=== AQL Translation ===");
                                         println!("{}", format_aql_query(&aql_lines));

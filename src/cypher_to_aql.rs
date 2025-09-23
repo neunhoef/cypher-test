@@ -119,11 +119,9 @@ fn generate_vertex_prune_conditions(vertex: &PatternVertex, vertex_identifier: &
 ///
 /// # Returns
 /// * Collection name string, or error if no rel_type specified
-fn derive_edge_collection_name(edge: &PatternEdge) -> Result<String, String> {
-    match &edge.rel_type {
-        Some(rel_type) => Ok(rel_type.clone()),
-        None => Err("Edge type is required but not specified".to_string()),
-    }
+fn derive_edge_collection_name(edge: &PatternEdge, config: &crate::config::Config) -> String {
+    let rel_type_str = edge.rel_type.as_deref();
+    config.get_edge_reference(rel_type_str)
 }
 
 /// Generate AQL graph traversal statement for a spanning tree edge
@@ -141,13 +139,14 @@ pub fn generate_edge_traversal(
     vertices: &[PatternVertex],
     edges: &[PatternEdge],
     indent: &mut usize,
+    config: &crate::config::Config,
 ) -> Result<AQLLine, String> {
     let edge = &edges[spanning_edge.edge_index];
     let from_vertex = &vertices[spanning_edge.from_vertex];
     let to_vertex = &vertices[spanning_edge.to_vertex];
 
-    // Get edge collection name
-    let edge_collection = derive_edge_collection_name(edge)?;
+    // Get edge collection name or graph reference
+    let edge_collection = derive_edge_collection_name(edge, config);
 
     // Determine AQL direction keyword
     let direction_keyword = match spanning_edge.traversal_direction {
@@ -340,12 +339,9 @@ pub fn generate_vertex_prune_for_multi_hop(vertex: &PatternVertex, edge: &Patter
 ///
 /// # Returns
 /// * Collection name string
-fn derive_collection_name(vertex: &PatternVertex) -> String {
-    if let Some(label) = &vertex.label {
-        label.clone()
-    } else {
-        "vertices".to_string()
-    }
+fn derive_collection_name(vertex: &PatternVertex, config: &crate::config::Config) -> String {
+    let label_str = vertex.label.as_deref();
+    config.get_vertex_collection(label_str)
 }
 
 /// Find the vertex with the most prescribed properties
@@ -383,7 +379,7 @@ fn find_anchor_vertex(vertices: &[PatternVertex]) -> Option<usize> {
 ///
 /// # Returns
 /// * `Result<(Vec<AQLLine>, usize), String>` with AQL lines and current indentation level, or error message
-pub fn match_to_aql(pattern_graph: &PatternGraph) -> Result<(Vec<AQLLine>, usize), String> {
+pub fn match_to_aql(pattern_graph: &PatternGraph, config: &crate::config::Config) -> Result<(Vec<AQLLine>, usize), String> {
     let vertices = &pattern_graph.vertices;
     let edges = &pattern_graph.edges;
     if vertices.is_empty() {
@@ -397,7 +393,7 @@ pub fn match_to_aql(pattern_graph: &PatternGraph) -> Result<(Vec<AQLLine>, usize
         find_anchor_vertex(vertices).ok_or("Failed to find anchor vertex".to_string())?;
 
     let anchor_vertex = &vertices[anchor_index];
-    let collection_name = derive_collection_name(anchor_vertex);
+    let collection_name = derive_collection_name(anchor_vertex, config);
     let variable_name = &anchor_vertex.identifier;
 
     let mut aql_lines = Vec::new();
@@ -431,7 +427,7 @@ pub fn match_to_aql(pattern_graph: &PatternGraph) -> Result<(Vec<AQLLine>, usize
         for spanning_edge in &spanning_tree {
             // Generate the edge traversal FOR statement
             let traversal_line =
-                generate_edge_traversal(spanning_edge, vertices, edges, &mut current_indent)?;
+                generate_edge_traversal(spanning_edge, vertices, edges, &mut current_indent, config)?;
             aql_lines.push(traversal_line);
 
             // Generate PRUNE conditions for target vertex properties if this is a multi-hop edge
@@ -806,9 +802,10 @@ fn generate_return_projections(
 pub fn generate_complete_aql(
     pattern_graph: &PatternGraph,
     return_clause: &ReturnClause,
+    config: &crate::config::Config,
 ) -> Result<Vec<AQLLine>, String> {
     // First generate the MATCH part
-    let (mut aql_lines, current_indent) = match_to_aql(pattern_graph)?;
+    let (mut aql_lines, current_indent) = match_to_aql(pattern_graph, config)?;
 
     // Then generate the RETURN part using the current indentation level
     let return_lines =
