@@ -542,7 +542,6 @@ fn generate_path_vertices_array(
         }
 
         let edge = &pattern_graph.edges[edge_index];
-        let is_last_edge = position == edge_indices.len() - 1;
 
         // Add source vertex if not seen (for first edge only)
         if position == 0 && !seen_vertices.contains(&edge.source) {
@@ -560,23 +559,9 @@ fn generate_path_vertices_array(
         // Add vertices from the edge traversal
         if is_multi_hop_edge(edge) {
             let path_var = get_path_variable_name(edge);
-            if is_last_edge {
-                // For the last multi-hop edge, use all vertices from _p_e.vertices (except the first one if not the first edge)
-                if position == 0 {
-                    vertex_components.push(format!("{path_var}.vertices"));
-                } else {
-                    // Skip the first vertex to avoid duplication
-                    vertex_components.push(format!("SLICE({path_var}.vertices, 1)"));
-                }
-            } else {
-                // For non-last multi-hop edges, use REMOVE_NTH to remove the last vertex
-                if position == 0 {
-                    vertex_components.push(format!("REMOVE_NTH({path_var}.vertices, -1)"));
-                } else {
-                    // Skip the first vertex and remove the last vertex
-                    vertex_components.push(format!("REMOVE_NTH(SLICE({path_var}.vertices, 1), -1)"));
-                }
-            }
+            // Since the first vertex of the full path is put there separately,
+            // we can always remove the first vertex from _p_e.vertices
+            vertex_components.push(format!("REMOVE_NTH({path_var}.vertices, 0)"));
         } else {
             // For single-hop edges, add the target vertex if not seen
             if !seen_vertices.contains(&edge.target) {
