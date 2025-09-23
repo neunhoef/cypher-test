@@ -50,7 +50,10 @@ fn generate_filter_conditions(properties: &HashMap<String, Value>, variable_name
 ///
 /// # Returns
 /// * `String` with FILTER conditions using path edges syntax, empty if no properties
-fn generate_multi_hop_edge_filter_conditions(properties: &HashMap<String, Value>, path_variable: &str) -> String {
+fn generate_multi_hop_edge_filter_conditions(
+    properties: &HashMap<String, Value>,
+    path_variable: &str,
+) -> String {
     if properties.is_empty() {
         return String::new();
     }
@@ -69,7 +72,6 @@ fn generate_multi_hop_edge_filter_conditions(properties: &HashMap<String, Value>
     conditions.join(" AND ")
 }
 
-
 /// Generate PRUNE conditions for vertex properties in multi-hop traversals
 /// Returns a string with PRUNE condition for optimization
 /// Uses inverted logic: prunes when edge is not null AND any property doesn't match
@@ -81,12 +83,17 @@ fn generate_multi_hop_edge_filter_conditions(properties: &HashMap<String, Value>
 ///
 /// # Returns
 /// * `String` with PRUNE condition, empty if no properties
-fn generate_vertex_prune_conditions(vertex: &PatternVertex, vertex_identifier: &str, edge_identifier: &str) -> String {
+fn generate_vertex_prune_conditions(
+    vertex: &PatternVertex,
+    vertex_identifier: &str,
+    edge_identifier: &str,
+) -> String {
     if vertex.properties.is_empty() {
         return String::new();
     }
 
-    let vertex_conditions: Vec<String> = vertex.properties
+    let vertex_conditions: Vec<String> = vertex
+        .properties
         .iter()
         .map(|(key, value)| match value {
             Value::String(s) => format!("{vertex_identifier}.{key} != '{s}'"),
@@ -102,13 +109,13 @@ fn generate_vertex_prune_conditions(vertex: &PatternVertex, vertex_identifier: &
     }
 
     let vertex_condition_part = vertex_conditions.join(" || ");
-    
+
     if edge_identifier.is_empty() {
         // No edge variable, just the inverted vertex conditions
         vertex_condition_part
     } else {
         // Include the inverted edge null check with AND
-        format!("{edge_identifier} != null && ({vertex_condition_part})")
+        format!("{edge_identifier}._key != null && ({vertex_condition_part})")
     }
 }
 
@@ -159,23 +166,32 @@ pub fn generate_edge_traversal(
     let min_depth = edge.min_depth.unwrap_or(1);
     let max_depth = edge.max_depth.unwrap_or(1);
     let depth_range = format!("{min_depth}..{max_depth}");
-    
+
     // Check if this is a multi-hop edge (not 1..1)
     let is_multi_hop = min_depth != 1 || max_depth != 1;
-    
+
     let for_statement = if edge.identifier.is_empty() {
         // No edge variable needed
         if is_multi_hop {
             // Multi-hop without edge variable - just vertex and path
             format!(
                 "FOR {}, _p_{} IN {} {} {}._id {}",
-                to_vertex.identifier, to_vertex.identifier, depth_range, direction_keyword, from_vertex.identifier, edge_collection
+                to_vertex.identifier,
+                to_vertex.identifier,
+                depth_range,
+                direction_keyword,
+                from_vertex.identifier,
+                edge_collection
             )
         } else {
             // Single-hop without edge variable
             format!(
                 "FOR {} IN {} {} {}._id {}",
-                to_vertex.identifier, depth_range, direction_keyword, from_vertex.identifier, edge_collection
+                to_vertex.identifier,
+                depth_range,
+                direction_keyword,
+                from_vertex.identifier,
+                edge_collection
             )
         }
     } else {
@@ -277,7 +293,11 @@ pub fn generate_edge_filter(edge: &PatternEdge, indent: usize) -> Option<AQLLine
 ///
 /// # Returns
 /// * `Option<AQLLine>` - FILTER line if vertex has properties, None otherwise
-pub fn generate_vertex_filter_for_multi_hop(vertex: &PatternVertex, _edge: &PatternEdge, indent: usize) -> Option<AQLLine> {
+pub fn generate_vertex_filter_for_multi_hop(
+    vertex: &PatternVertex,
+    _edge: &PatternEdge,
+    indent: usize,
+) -> Option<AQLLine> {
     if vertex.properties.is_empty() {
         return None;
     }
@@ -304,7 +324,11 @@ pub fn generate_vertex_filter_for_multi_hop(vertex: &PatternVertex, _edge: &Patt
 ///
 /// # Returns
 /// * `Option<AQLLine>` - PRUNE line if vertex has properties and edge is multi-hop, None otherwise
-pub fn generate_vertex_prune_for_multi_hop(vertex: &PatternVertex, edge: &PatternEdge, indent: usize) -> Option<AQLLine> {
+pub fn generate_vertex_prune_for_multi_hop(
+    vertex: &PatternVertex,
+    edge: &PatternEdge,
+    indent: usize,
+) -> Option<AQLLine> {
     if vertex.properties.is_empty() {
         return None;
     }
@@ -320,7 +344,8 @@ pub fn generate_vertex_prune_for_multi_hop(vertex: &PatternVertex, edge: &Patter
     }
 
     // Generate PRUNE conditions
-    let prune_conditions = generate_vertex_prune_conditions(vertex, &vertex.identifier, &edge.identifier);
+    let prune_conditions =
+        generate_vertex_prune_conditions(vertex, &vertex.identifier, &edge.identifier);
     if prune_conditions.is_empty() {
         return None;
     }
@@ -379,7 +404,10 @@ fn find_anchor_vertex(vertices: &[PatternVertex]) -> Option<usize> {
 ///
 /// # Returns
 /// * `Result<(Vec<AQLLine>, usize), String>` with AQL lines and current indentation level, or error message
-pub fn match_to_aql(pattern_graph: &PatternGraph, config: &crate::config::Config) -> Result<(Vec<AQLLine>, usize), String> {
+pub fn match_to_aql(
+    pattern_graph: &PatternGraph,
+    config: &crate::config::Config,
+) -> Result<(Vec<AQLLine>, usize), String> {
     let vertices = &pattern_graph.vertices;
     let edges = &pattern_graph.edges;
     if vertices.is_empty() {
@@ -426,14 +454,21 @@ pub fn match_to_aql(pattern_graph: &PatternGraph, config: &crate::config::Config
         // Generate traversal statements for each edge in the spanning tree
         for spanning_edge in &spanning_tree {
             // Generate the edge traversal FOR statement
-            let traversal_line =
-                generate_edge_traversal(spanning_edge, vertices, edges, &mut current_indent, config)?;
+            let traversal_line = generate_edge_traversal(
+                spanning_edge,
+                vertices,
+                edges,
+                &mut current_indent,
+                config,
+            )?;
             aql_lines.push(traversal_line);
 
             // Generate PRUNE conditions for target vertex properties if this is a multi-hop edge
             let edge = &edges[spanning_edge.edge_index];
             let target_vertex = &vertices[spanning_edge.to_vertex];
-            if let Some(vertex_prune) = generate_vertex_prune_for_multi_hop(target_vertex, edge, current_indent) {
+            if let Some(vertex_prune) =
+                generate_vertex_prune_for_multi_hop(target_vertex, edge, current_indent)
+            {
                 aql_lines.push(vertex_prune);
             }
 
@@ -443,7 +478,9 @@ pub fn match_to_aql(pattern_graph: &PatternGraph, config: &crate::config::Config
             }
 
             // Generate FILTER conditions for target vertex properties if they exist
-            if let Some(vertex_filter) = generate_vertex_filter_for_multi_hop(target_vertex, edge, current_indent) {
+            if let Some(vertex_filter) =
+                generate_vertex_filter_for_multi_hop(target_vertex, edge, current_indent)
+            {
                 aql_lines.push(vertex_filter);
             }
         }
@@ -532,9 +569,7 @@ fn generate_path_vertices_array(
 
     for (position, &edge_index) in edge_indices.iter().enumerate() {
         if edge_index >= pattern_graph.edges.len() {
-            return Err(format!(
-                "Invalid edge index {edge_index} in path"
-            ));
+            return Err(format!("Invalid edge index {edge_index} in path"));
         }
 
         let edge = &pattern_graph.edges[edge_index];
@@ -600,9 +635,7 @@ fn generate_path_edges_array(
 
     for &edge_index in edge_indices {
         if edge_index >= pattern_graph.edges.len() {
-            return Err(format!(
-                "Invalid edge index {edge_index} in path"
-            ));
+            return Err(format!("Invalid edge index {edge_index} in path"));
         }
 
         let edge = &pattern_graph.edges[edge_index];
