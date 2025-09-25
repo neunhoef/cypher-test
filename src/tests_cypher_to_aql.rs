@@ -770,7 +770,7 @@ fn test_multi_hop_with_prune_statement() {
     assert!(query.contains("FOR b IN VERTICES"));
     assert!(query.contains("FOR a, a_b, _p_a_b IN 2..4 INBOUND b._id KNOWS"));
     // Should generate PRUNE statement with inverted edge null check for target vertex a
-    assert!(query.contains("PRUNE a_b != null && (a.type != 'source')"));
+    assert!(query.contains("PRUNE a_b._key != null && (a.type != 'source')"));
     // Should generate property filters for anchor b
     assert!(query.contains("b.name == 'target'"));
     assert!(query.contains("b.active == true"));
@@ -884,7 +884,7 @@ fn test_final_multi_hop_output_example() {
     // Algorithm chooses end as anchor (2 properties vs 1), so it traverses INBOUND
     assert!(query.contains("FOR end IN VERTICES"));
     assert!(query.contains("FOR start, start_end, _p_start_end IN 1..4 INBOUND end._id KNOWS"));
-    assert!(query.contains("PRUNE start_end != null && (start.id != 1)"));
+    assert!(query.contains("PRUNE start_end._key != null && (start.id != 1)"));
     assert!(query.contains("FILTER start.id == 1"));
     // Check properties individually since HashMap iteration order can vary
     assert!(query.contains("end.active == true"));

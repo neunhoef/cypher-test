@@ -283,6 +283,61 @@ pub fn generate_edge_filter(edge: &PatternEdge, indent: usize) -> Option<AQLLine
     })
 }
 
+/// Generate FILTER conditions for vertex label based on edge direction and depth
+///
+/// # Arguments
+/// * `vertex` - The target vertex
+/// * `edge` - The edge used to reach this vertex
+/// * `traversal_direction` - The direction of traversal
+/// * `config` - Configuration for collection mapping
+/// * `indent` - Current indentation level
+///
+/// # Returns
+/// * `Option<AQLLine>` - FILTER line for vertex label if vertex has a label, None otherwise
+pub fn generate_vertex_label_filter(
+    vertex: &PatternVertex,
+    edge: &PatternEdge,
+    traversal_direction: &TraversalDirection,
+    config: &crate::config::Config,
+    indent: usize,
+) -> Option<AQLLine> {
+    // Only generate filter if vertex has a label
+    vertex.label.as_ref()?;
+
+    // Get the collection name for this vertex label
+    let label_str = vertex.label.as_deref();
+    let collection_name = config.get_vertex_collection(label_str);
+
+    // Check if this is a multi-hop edge
+    let min_depth = edge.min_depth.unwrap_or(1);
+    let max_depth = edge.max_depth.unwrap_or(1);
+    let is_multi_hop = min_depth != 1 || max_depth != 1;
+
+    let filter_condition = if is_multi_hop {
+        // For variable depth, always filter on final vertex regardless of direction
+        format!("FILTER IS_SAME_COLLECTION(\"{collection_name}\", {}._id)", vertex.identifier)
+    } else {
+        // For single-hop, direction matters
+        match traversal_direction {
+            TraversalDirection::Outbound => {
+                format!("FILTER IS_SAME_COLLECTION(\"{collection_name}\", {}._to)", edge.identifier)
+            }
+            TraversalDirection::Inbound => {
+                format!("FILTER IS_SAME_COLLECTION(\"{collection_name}\", {}._from)", edge.identifier)
+            }
+            TraversalDirection::Any => {
+                format!("FILTER IS_SAME_COLLECTION(\"{collection_name}\", {}._id)", vertex.identifier)
+            }
+        }
+    };
+
+    Some(AQLLine {
+        content: filter_condition,
+        indent,
+        exposed_variables: vec![], // FILTER statements don't expose new variables
+    })
+}
+
 /// Generate FILTER conditions for vertex properties
 /// Now uses simple vertex property syntax for both single-hop and multi-hop cases
 ///
@@ -369,31 +424,66 @@ fn derive_collection_name(vertex: &PatternVertex, config: &crate::config::Config
     config.get_vertex_collection(label_str)
 }
 
-/// Find the vertex with the most prescribed properties
-/// In case of a tie, select the vertex with the smallest index
+/// Find the anchor vertex, considering labels and properties
+/// Prefers vertices with labels, then those with the most properties
+/// In case of a tie, selects the vertex with the smallest index
 ///
 /// # Arguments
 /// * `vertices` - Vector of pattern vertices
+/// * `config` - Configuration for fallback behavior
 ///
 /// # Returns
-/// * Index of the anchor vertex, or None if vertices is empty
-fn find_anchor_vertex(vertices: &[PatternVertex]) -> Option<usize> {
+/// * (anchor_index, uses_fallback) - Index of anchor vertex and whether fallback collection is used
+fn find_anchor_vertex(vertices: &[PatternVertex], _config: &crate::config::Config) -> Option<(usize, bool)> {
     if vertices.is_empty() {
         return None;
     }
 
+    // Check if any vertex has a label
+    let has_any_labeled_vertex = vertices.iter().any(|v| v.label.is_some());
+    
+    if !has_any_labeled_vertex {
+        // No vertex has a label - use fallback collection and can anchor on any vertex
+        // Choose vertex with most properties
+        let mut best_index = 0;
+        let mut max_properties = vertices[0].properties.len();
+
+        for (index, vertex) in vertices.iter().enumerate().skip(1) {
+            let prop_count = vertex.properties.len();
+            if prop_count > max_properties {
+                max_properties = prop_count;
+                best_index = index;
+            }
+        }
+        return Some((best_index, true)); // Uses fallback
+    }
+
+    // At least one vertex has a label - prefer labeled vertices for anchoring
     let mut best_index = 0;
+    let mut best_has_label = vertices[0].label.is_some();
     let mut max_properties = vertices[0].properties.len();
 
     for (index, vertex) in vertices.iter().enumerate().skip(1) {
+        let has_label = vertex.label.is_some();
         let prop_count = vertex.properties.len();
-        if prop_count > max_properties {
-            max_properties = prop_count;
+
+        // Prefer vertices with labels
+        if has_label && !best_has_label {
+            // This vertex has a label and the current best doesn't
             best_index = index;
+            best_has_label = true;
+            max_properties = prop_count;
+        } else if has_label == best_has_label {
+            // Both have labels or both don't - compare properties
+            if prop_count > max_properties {
+                best_index = index;
+                max_properties = prop_count;
+            }
         }
+        // If current best has label but this doesn't, skip this vertex
     }
 
-    Some(best_index)
+    Some((best_index, false)) // Doesn't use fallback
 }
 
 /// Generate AQL query from a pattern graph match statement
@@ -416,12 +506,17 @@ pub fn match_to_aql(
 
     // Multi-hop edges are now supported
 
-    // Find the anchor vertex (most properties, smallest index for ties)
-    let anchor_index =
-        find_anchor_vertex(vertices).ok_or("Failed to find anchor vertex".to_string())?;
+    // Find the anchor vertex (prefers labeled vertices, then most properties)
+    let (anchor_index, uses_fallback) =
+        find_anchor_vertex(vertices, config).ok_or("Failed to find anchor vertex".to_string())?;
 
     let anchor_vertex = &vertices[anchor_index];
-    let collection_name = derive_collection_name(anchor_vertex, config);
+    let collection_name = if uses_fallback {
+        // No vertex has a label - use fallback collection
+        config.fall_back_vertex_collection.clone()
+    } else {
+        derive_collection_name(anchor_vertex, config)
+    };
     let variable_name = &anchor_vertex.identifier;
 
     let mut aql_lines = Vec::new();
@@ -475,6 +570,17 @@ pub fn match_to_aql(
             // Generate FILTER conditions for edge properties if they exist
             if let Some(edge_filter) = generate_edge_filter(edge, current_indent) {
                 aql_lines.push(edge_filter);
+            }
+
+            // Generate FILTER conditions for target vertex label if it has one
+            if let Some(label_filter) = generate_vertex_label_filter(
+                target_vertex,
+                edge,
+                &spanning_edge.traversal_direction,
+                config,
+                current_indent,
+            ) {
+                aql_lines.push(label_filter);
             }
 
             // Generate FILTER conditions for target vertex properties if they exist
